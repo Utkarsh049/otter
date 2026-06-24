@@ -1,7 +1,7 @@
-use serde::Serialize;
+use serde::{Serialize, Deserialize};
 use super::status::StatusCode;
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SubmissionResponse {
     pub token: String,
     pub status: StatusCode,

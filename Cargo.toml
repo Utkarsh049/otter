@@ -17,6 +17,15 @@ path = "src/main.rs"
 name = "execution_test"
 path = "tests/unit/execution_test.rs"
 
+[[test]]
+name = "api_test"
+path = "tests/integration/api_test.rs"
+
+[[test]]
+name = "concurrent_test"
+path = "tests/integration/concurrent_test.rs"
+
+
 [dependencies]
 axum = { version = "0.7", features = ["macros"] }
 tokio = { version = "1", features = ["full"] }
@@ -35,3 +44,4 @@ dotenvy = "0.15"
 [dev-dependencies]
 axum-test = "14"
 tokio-test = "0.4"
+futures = "0.3"
