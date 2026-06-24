@@ -1,0 +1,34 @@
+use anyhow::{Context, Result};
+
+#[derive(Debug, Clone)]
+pub struct Settings {
+    pub host: String,
+    pub port: u16,
+    pub max_concurrent: usize,
+    pub cpu_limit_ms: u64,
+    pub wall_limit_ms: u64,
+    pub memory_limit_mb: u64,
+    pub max_output_bytes: usize,
+    pub redis_url: Option<String>,
+}
+
+impl Settings {
+    pub fn from_env() -> Result<Self> {
+        Ok(Self {
+            host: std::env::var("HOST").unwrap_or("0.0.0.0".into()),
+            port: std::env::var("PORT").unwrap_or("8080".into())
+                .parse().context("PORT must be a number")?,
+            max_concurrent: std::env::var("MAX_CONCURRENT").unwrap_or("8".into())
+                .parse().context("MAX_CONCURRENT must be a number")?,
+            cpu_limit_ms: std::env::var("CPU_LIMIT_MS").unwrap_or("5000".into())
+                .parse().context("CPU_LIMIT_MS must be a number")?,
+            wall_limit_ms: std::env::var("WALL_LIMIT_MS").unwrap_or("10000".into())
+                .parse().context("WALL_LIMIT_MS must be a number")?,
+            memory_limit_mb: std::env::var("MEMORY_LIMIT_MB").unwrap_or("128".into())
+                .parse().context("MEMORY_LIMIT_MB must be a number")?,
+            max_output_bytes: std::env::var("MAX_OUTPUT_BYTES").unwrap_or("1048576".into())
+                .parse().context("MAX_OUTPUT_BYTES must be a number")?,
+            redis_url: std::env::var("REDIS_URL").ok(),
+        })
+    }
+}

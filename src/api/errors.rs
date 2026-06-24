@@ -1,0 +1,21 @@
+use axum::http::StatusCode;
+use axum::response::{IntoResponse, Response};
+use axum::Json;
+use serde_json::json;
+
+pub enum ApiError {
+    NotFound(String),
+    BadRequest(String),
+    InternalError(String),
+}
+
+impl IntoResponse for ApiError {
+    fn into_response(self) -> Response {
+        let (status, message) = match self {
+            ApiError::NotFound(m)      => (StatusCode::NOT_FOUND, m),
+            ApiError::BadRequest(m)    => (StatusCode::BAD_REQUEST, m),
+            ApiError::InternalError(m) => (StatusCode::INTERNAL_SERVER_ERROR, m),
+        };
+        (status, Json(json!({ "error": message }))).into_response()
+    }
+}
