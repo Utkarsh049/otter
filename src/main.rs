@@ -1,9 +1,3 @@
-mod api;
-mod config;
-mod execution;
-mod queue;
-mod store;
-
 use anyhow::Result;
 
 #[tokio::main]
@@ -14,7 +8,7 @@ async fn main() -> Result<()> {
             std::env::var("RUST_LOG").unwrap_or("info".into())
         )
         .init();
-    let settings = config::Settings::from_env()?;
+    let settings = otter::config::Settings::from_env()?;
     tracing::info!("Otter starting on {}:{}", settings.host, settings.port);
-    api::serve(settings).await
+    otter::api::serve(settings).await
 }

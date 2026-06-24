@@ -5,9 +5,17 @@ edition = "2021"
 description = "Lightweight secure code execution engine"
 license = "MIT"
 
+[lib]
+name = "otter"
+path = "src/lib.rs"
+
 [[bin]]
 name = "otter"
 path = "src/main.rs"
+
+[[test]]
+name = "execution_test"
+path = "tests/unit/execution_test.rs"
 
 [dependencies]
 axum = { version = "0.7", features = ["macros"] }

@@ -1,7 +1,7 @@
 use anyhow::Result;
 use async_trait::async_trait;
-use crate::execution::result::{ExecutionResult, ExecutionStatus};
-use super::{JobContext, Language, CompileOutput};
+use crate::execution::result::ExecutionResult;
+use super::{JobContext, Language};
 
 pub struct Python;
 
@@ -12,13 +12,7 @@ impl Language for Python {
     fn version(&self)        -> &'static str { "3.11" }
     fn file_extension(&self) -> &'static str { "py" }
 
-    async fn run(&self, _ctx: &JobContext) -> Result<ExecutionResult> {
-        // Phase 2: python3 main.py
-        Ok(ExecutionResult {
-            status: ExecutionStatus::Accepted,
-            stdout: String::new(), stderr: String::new(),
-            compile_output: String::new(),
-            time_ms: 0, memory_kb: 0, exit_code: 0,
-        })
+    async fn run(&self, ctx: &JobContext) -> Result<ExecutionResult> {
+        crate::execution::engine::Engine::run_command("python3", &["main.py"], ctx).await
     }
 }
