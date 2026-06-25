@@ -13,6 +13,6 @@ impl Language for Python {
     fn file_extension(&self) -> &'static str { "py" }
 
     async fn run(&self, ctx: &JobContext) -> Result<ExecutionResult> {
-        crate::execution::engine::Engine::run_command("python3", &["main.py"], ctx).await
+        crate::execution::engine::Engine::run_command("python", "python3", &["main.py"], ctx).await
     }
 }

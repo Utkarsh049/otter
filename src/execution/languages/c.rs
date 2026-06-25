@@ -32,6 +32,6 @@ impl Language for C {
     }
 
     async fn run(&self, ctx: &JobContext) -> Result<ExecutionResult> {
-        crate::execution::engine::Engine::run_command("./program", &[], ctx).await
+        crate::execution::engine::Engine::run_command("c", "./program", &[], ctx).await
     }
 }

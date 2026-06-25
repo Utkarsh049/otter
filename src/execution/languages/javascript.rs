@@ -13,6 +13,7 @@ impl Language for JavaScript {
     fn file_extension(&self) -> &'static str { "js" }
 
     async fn run(&self, ctx: &JobContext) -> Result<ExecutionResult> {
-        crate::execution::engine::Engine::run_command("node", &["main.js"], ctx).await
+        let max_old_space = format!("--max-old-space-size={}", ctx.limits.memory_mb);
+        crate::execution::engine::Engine::run_command("javascript", "node", &[&max_old_space, "main.js"], ctx).await
     }
 }

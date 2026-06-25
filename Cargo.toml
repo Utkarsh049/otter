@@ -25,6 +25,11 @@ path = "tests/integration/api_test.rs"
 name = "concurrent_test"
 path = "tests/integration/concurrent_test.rs"
 
+[[test]]
+name = "sandbox_attacks"
+path = "tests/sandbox_attacks/sandbox_attacks.rs"
+
+
 
 [dependencies]
 axum = { version = "0.7", features = ["macros"] }
@@ -40,6 +45,9 @@ anyhow = "1"
 thiserror = "1"
 dashmap = "5"
 dotenvy = "0.15"
+nix = { version = "0.29", features = ["resource", "signal", "user"] }
+libseccomp = "0.3"
+
 
 [dev-dependencies]
 axum-test = "14"
