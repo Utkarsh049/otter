@@ -17,8 +17,13 @@ pub async fn submit(
     Extension(registry): Extension<Arc<LanguageRegistry>>,
     Extension(store): Extension<Arc<SubmissionStore>>,
     Extension(worker): Extension<Arc<Worker>>,
-    Json(req): Json<SubmissionRequest>,
+    payload: Result<Json<SubmissionRequest>, axum::extract::rejection::JsonRejection>,
 ) -> Result<Json<SubmissionResponse>, ApiError> {
+    let Json(req) = match payload {
+        Ok(json) => json,
+        Err(err) => return Err(ApiError::BadRequest(err.to_string())),
+    };
+
     if registry.get(&req.language).is_none() {
         return Err(ApiError::BadRequest(
             format!("unsupported language: '{}'", req.language)

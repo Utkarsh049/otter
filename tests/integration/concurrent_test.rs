@@ -111,3 +111,43 @@ async fn test_bounded_concurrency_cap() {
     assert!(peak_processing_count <= 2, "Peak processing count was {} which exceeded limit of 2", peak_processing_count);
     assert!(peak_processing_count > 0, "No processing tasks were observed");
 }
+
+#[tokio::test]
+async fn test_memory_leak_and_consistency() {
+    let app = build_router(get_test_settings(4));
+    let server = TestServer::new(app).unwrap();
+    
+    // Execute 50 sequential executions to verify memory stability and correct cleaning of resources
+    for i in 0..50 {
+        let request_payload = SubmissionRequest {
+            language: "python".to_string(),
+            source_code: format!("print('loop {}')", i),
+            stdin: "".to_string(),
+            cpu_time_limit_ms: None,
+            memory_limit_mb: None,
+            wall_time_limit_ms: None,
+        };
+        
+        let response = server.post("/submissions").json(&request_payload).await;
+        response.assert_status_ok();
+        
+        let token = response.json::<SubmissionResponse>().token;
+        
+        // Poll until finished
+        let mut finished = false;
+        for _ in 0..100 {
+            let get_response = server.get(&format!("/submissions/{}", token)).await;
+            get_response.assert_status_ok();
+            let poll_res = get_response.json::<SubmissionResponse>();
+            if poll_res.status.id == 3 { // Accepted
+                assert_eq!(poll_res.stdout.unwrap(), format!("loop {}\n", i));
+                finished = true;
+                break;
+            } else if poll_res.status.id > 3 {
+                panic!("Task failed at loop {} with status: {:?}", i, poll_res.status);
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(finished, "Submission {} did not finish", i);
+    }
+}

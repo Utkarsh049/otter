@@ -86,7 +86,7 @@ impl Engine {
             let syscalls: &[&str] = match language_id {
                 "c" | "cpp" => &[
                     "read", "write", "open", "openat", "close", "fstat", "stat", "lstat",
-                    "lseek", "mmap", "mprotect", "munmap", "brk", "rt_sigaction", "rt_sigprocmask",
+                    "lseek", "mmap", "mprotect", "munmap", "mremap", "brk", "rt_sigaction", "rt_sigprocmask",
                     "rt_sigreturn", "ioctl", "access", "select", "poll", "madvise",
                     "getuid", "getgid", "geteuid", "getegid", "exit", "exit_group", "arch_prctl",
                     "futex", "set_tid_address", "set_robust_list", "clock_gettime",
@@ -100,7 +100,7 @@ impl Engine {
                 ],
                 "python" => &[
                     "read", "write", "open", "openat", "close", "fstat", "stat", "lstat",
-                    "lseek", "mmap", "mprotect", "munmap", "brk", "rt_sigaction", "rt_sigprocmask",
+                    "lseek", "mmap", "mprotect", "munmap", "mremap", "brk", "rt_sigaction", "rt_sigprocmask",
                     "rt_sigreturn", "ioctl", "access", "select", "poll", "madvise",
                     "getuid", "getgid", "geteuid", "getegid", "exit", "exit_group", "arch_prctl",
                     "futex", "set_tid_address", "set_robust_list", "clock_gettime",
@@ -116,7 +116,7 @@ impl Engine {
                 ],
                 "javascript" => &[
                     "read", "write", "open", "openat", "close", "fstat", "stat", "lstat",
-                    "lseek", "mmap", "mprotect", "munmap", "brk", "rt_sigaction", "rt_sigprocmask",
+                    "lseek", "mmap", "mprotect", "munmap", "mremap", "brk", "rt_sigaction", "rt_sigprocmask",
                     "rt_sigreturn", "ioctl", "access", "select", "poll", "madvise",
                     "getuid", "getgid", "geteuid", "getegid", "exit", "exit_group", "arch_prctl",
                     "futex", "set_tid_address", "set_robust_list", "clock_gettime",

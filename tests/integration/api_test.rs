@@ -109,3 +109,27 @@ async fn test_unsupported_language() {
     let post_response = server.post("/submissions").json(&request_payload).await;
     post_response.assert_status_bad_request();
 }
+
+#[tokio::test]
+async fn test_malformed_json() {
+    let app = build_router(get_test_settings());
+    let server = TestServer::new(app).unwrap();
+    
+    // Send schema-invalid JSON (language as integer) to trigger JSON parsing failure (400)
+    let payload = serde_json::json!({
+        "language": 12345,
+        "source_code": "print('hello')"
+    });
+    
+    let response = server.post("/submissions").json(&payload).await;
+    response.assert_status_bad_request();
+}
+
+#[tokio::test]
+async fn test_missing_token() {
+    let app = build_router(get_test_settings());
+    let server = TestServer::new(app).unwrap();
+    
+    let response = server.get("/submissions/non_existent_token_123").await;
+    response.assert_status_not_found();
+}
