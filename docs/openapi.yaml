@@ -1,0 +1,217 @@
+openapi: 3.0.3
+info:
+  title: Otter Code Execution Engine API
+  description: Lightweight sandboxed execution engine for C, C++, Python, and JavaScript.
+  version: 0.1.0
+servers:
+  - url: http://localhost:8080
+    description: Local development server
+paths:
+  /health:
+    get:
+      summary: Health check
+      description: Returns the health status of the execution engine.
+      responses:
+        '200':
+          description: Server is healthy
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: ok
+                  version:
+                    type: string
+                    example: 0.1.0
+  /languages:
+    get:
+      summary: List supported languages
+      description: Returns a list of all compilers and runtimes registered in the system.
+      responses:
+        '200':
+          description: A list of supported languages
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/LanguageInfo'
+  /submissions:
+    post:
+      summary: Submit code for execution
+      description: Enqueues a code execution job inside the bubblewrap sandbox and returns immediately.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SubmissionRequest'
+      responses:
+        '201':
+          description: Submission enqueued successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SubmissionResponse'
+        '400':
+          description: Bad request (invalid language, negative resource limits, etc.)
+        '415':
+          description: Unsupported Media Type (Content-Type must be application/json)
+  /submissions/{token}:
+    get:
+      summary: Get submission details
+      description: Queries the execution progress or final results using the token.
+      parameters:
+        - name: token
+          in: path
+          required: true
+          description: The execution token returned from the creation endpoint.
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Submission details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SubmissionResponse'
+        '404':
+          description: Submission token not found
+  /submissions/batch:
+    post:
+      summary: Batch submit execution jobs
+      description: Submit multiple execution requests simultaneously.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BatchSubmissionRequest'
+      responses:
+        '201':
+          description: Batch submissions successfully enqueued
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BatchSubmissionResponse'
+        '400':
+          description: Invalid request payload or configuration limits
+  /metrics:
+    get:
+      summary: Observability run metrics
+      description: Exposes completed job count, error rate, and average execution latency.
+      responses:
+        '200':
+          description: Current runtime statistics
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  count:
+                    type: integer
+                    example: 24
+                  error_rate:
+                    type: number
+                    format: float
+                    example: 0.125
+                  avg_latency:
+                    type: number
+                    format: float
+                    example: 104.5
+components:
+  schemas:
+    LanguageInfo:
+      type: object
+      properties:
+        id:
+          type: string
+          example: python
+        name:
+          type: string
+          example: Python
+        version:
+          type: string
+          example: Python 3.10+
+    SubmissionRequest:
+      type: object
+      required:
+        - language
+        - source_code
+      properties:
+        language:
+          type: string
+          example: python
+        source_code:
+          type: string
+          example: print("Hello World")
+        stdin:
+          type: string
+          example: Input bytes
+        cpu_time_limit_ms:
+          type: integer
+          example: 1000
+        memory_limit_mb:
+          type: integer
+          example: 64
+        wall_time_limit_ms:
+          type: integer
+          example: 2000
+    SubmissionResponse:
+      type: object
+      properties:
+        token:
+          type: string
+          format: uuid
+        status:
+          type: object
+          properties:
+            id:
+              type: integer
+              example: 3
+            description:
+              type: string
+              example: Accepted
+        stdout:
+          type: string
+          nullable: true
+          example: Hello World\n
+        stderr:
+          type: string
+          nullable: true
+          example: ""
+        compile_output:
+          type: string
+          nullable: true
+          example: ""
+        time_ms:
+          type: integer
+          nullable: true
+          example: 45
+        memory_kb:
+          type: integer
+          nullable: true
+          example: 7890
+        exit_code:
+          type: integer
+          nullable: true
+          example: 0
+    BatchSubmissionRequest:
+      type: object
+      required:
+        - submissions
+      properties:
+        submissions:
+          type: array
+          items:
+            $ref: '#/components/schemas/SubmissionRequest'
+    BatchSubmissionResponse:
+      type: object
+      properties:
+        submissions:
+          type: array
+          items:
+            $ref: '#/components/schemas/SubmissionResponse'

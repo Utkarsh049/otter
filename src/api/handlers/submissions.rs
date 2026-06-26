@@ -3,8 +3,8 @@ use axum::extract::Path;
 use std::sync::Arc;
 use uuid::Uuid;
 use crate::api::errors::ApiError;
-use crate::api::models::request::SubmissionRequest;
-use crate::api::models::response::SubmissionResponse;
+use crate::api::models::request::{SubmissionRequest, BatchSubmissionRequest};
+use crate::api::models::response::{SubmissionResponse, BatchSubmissionResponse};
 use crate::api::models::status::StatusCode;
 use crate::execution::languages::registry::LanguageRegistry;
 use crate::store::memory::SubmissionStore;
@@ -18,11 +18,13 @@ pub async fn submit(
     Extension(store): Extension<Arc<SubmissionStore>>,
     Extension(worker): Extension<Arc<Worker>>,
     payload: Result<Json<SubmissionRequest>, axum::extract::rejection::JsonRejection>,
-) -> Result<Json<SubmissionResponse>, ApiError> {
+) -> Result<(axum::http::StatusCode, Json<SubmissionResponse>), ApiError> {
     let Json(req) = match payload {
         Ok(json) => json,
         Err(err) => return Err(ApiError::BadRequest(err.to_string())),
     };
+
+    req.validate(&settings)?;
 
     if registry.get(&req.language).is_none() {
         return Err(ApiError::BadRequest(
@@ -49,16 +51,81 @@ pub async fn submit(
         limits,
     );
     
-    Ok(Json(SubmissionResponse {
-        token,
-        status: StatusCode::queued(),
-        stdout: None,
-        stderr: None,
-        compile_output: None,
-        time_ms: None,
-        memory_kb: None,
-        exit_code: None,
-    }))
+    Ok((
+        axum::http::StatusCode::CREATED,
+        Json(SubmissionResponse {
+            token,
+            status: StatusCode::queued(),
+            stdout: None,
+            stderr: None,
+            compile_output: None,
+            time_ms: None,
+            memory_kb: None,
+            exit_code: None,
+        })
+    ))
+}
+
+pub async fn submit_batch(
+    Extension(settings): Extension<Settings>,
+    Extension(registry): Extension<Arc<LanguageRegistry>>,
+    Extension(store): Extension<Arc<SubmissionStore>>,
+    Extension(worker): Extension<Arc<Worker>>,
+    payload: Result<Json<BatchSubmissionRequest>, axum::extract::rejection::JsonRejection>,
+) -> Result<(axum::http::StatusCode, Json<BatchSubmissionResponse>), ApiError> {
+    let Json(req_batch) = match payload {
+        Ok(json) => json,
+        Err(err) => return Err(ApiError::BadRequest(err.to_string())),
+    };
+
+    // First validate all requests in the batch
+    for req in &req_batch.submissions {
+        req.validate(&settings)?;
+        if registry.get(&req.language).is_none() {
+            return Err(ApiError::BadRequest(
+                format!("unsupported language: '{}'", req.language)
+            ));
+        }
+    }
+
+    let mut responses = Vec::new();
+
+    for req in req_batch.submissions {
+        let token = Uuid::new_v4().to_string();
+        store.insert(token.clone(), StatusCode::queued());
+        
+        let limits = Limits {
+            cpu_time_ms: req.cpu_time_limit_ms.unwrap_or(settings.cpu_limit_ms),
+            wall_time_ms: req.wall_time_limit_ms.unwrap_or(settings.wall_limit_ms),
+            memory_mb: req.memory_limit_mb.unwrap_or(settings.memory_limit_mb),
+            max_output_bytes: settings.max_output_bytes,
+            max_processes: 32,
+        };
+        
+        worker.enqueue(
+            token.clone(),
+            req.language,
+            req.source_code,
+            req.stdin,
+            limits,
+        );
+
+        responses.push(SubmissionResponse {
+            token,
+            status: StatusCode::queued(),
+            stdout: None,
+            stderr: None,
+            compile_output: None,
+            time_ms: None,
+            memory_kb: None,
+            exit_code: None,
+        });
+    }
+
+    Ok((
+        axum::http::StatusCode::CREATED,
+        Json(BatchSubmissionResponse { submissions: responses }),
+    ))
 }
 
 pub async fn get_submission(

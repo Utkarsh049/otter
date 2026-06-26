@@ -25,7 +25,7 @@ pub async fn serve(settings: Settings) -> Result<()> {
     let addr: SocketAddr = format!("{}:{}", settings.host, settings.port).parse()?;
     tracing::info!("listening on {}", addr);
     let listener = tokio::net::TcpListener::bind(addr).await?;
-    axum::serve(listener, app)
+    axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>())
         .with_graceful_shutdown(async move {
             tokio::signal::ctrl_c().await.unwrap();
             let in_flight = worker_shutdown.in_flight();

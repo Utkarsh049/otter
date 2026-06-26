@@ -7,14 +7,12 @@ use std::time::Duration;
 
 fn get_test_settings() -> Settings {
     Settings {
-        host: "0.0.0.0".to_string(),
-        port: 8080,
         max_concurrent: 4,
         cpu_limit_ms: 1000,
         wall_limit_ms: 2000,
         memory_limit_mb: 64,
         max_output_bytes: 10240, // 10KB output cap for testing
-        redis_url: None,
+        ..Settings::default()
     }
 }
 
@@ -39,7 +37,7 @@ async fn run_attack(
     };
     
     let post_response = server.post("/submissions").json(&request_payload).await;
-    post_response.assert_status_ok();
+    post_response.assert_status(axum::http::StatusCode::CREATED);
     
     let token = post_response.json::<SubmissionResponse>().token;
     

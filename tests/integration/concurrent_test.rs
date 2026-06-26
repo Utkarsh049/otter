@@ -8,14 +8,8 @@ use futures::future::join_all;
 
 fn get_test_settings(max_concurrent: usize) -> Settings {
     Settings {
-        host: "0.0.0.0".to_string(),
-        port: 8080,
         max_concurrent,
-        cpu_limit_ms: 5000,
-        wall_limit_ms: 10000,
-        memory_limit_mb: 128,
-        max_output_bytes: 1048576,
-        redis_url: None,
+        ..Settings::default()
     }
 }
 
@@ -40,7 +34,7 @@ async fn test_twenty_simultaneous_submissions() {
             };
             
             let response = server_ref.post("/submissions").json(&request_payload).await;
-            response.assert_status_ok();
+            response.assert_status(axum::http::StatusCode::CREATED);
             
             let initial_res = response.json::<SubmissionResponse>();
             let token = initial_res.token;
@@ -84,7 +78,7 @@ async fn test_bounded_concurrency_cap() {
             wall_time_limit_ms: None,
         };
         let response = server.post("/submissions").json(&request_payload).await;
-        response.assert_status_ok();
+        response.assert_status(axum::http::StatusCode::CREATED);
         tokens.push(response.json::<SubmissionResponse>().token);
     }
     
@@ -129,7 +123,7 @@ async fn test_memory_leak_and_consistency() {
         };
         
         let response = server.post("/submissions").json(&request_payload).await;
-        response.assert_status_ok();
+        response.assert_status(axum::http::StatusCode::CREATED);
         
         let token = response.json::<SubmissionResponse>().token;
         

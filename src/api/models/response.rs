@@ -13,6 +13,11 @@ pub struct SubmissionResponse {
     pub exit_code: Option<i32>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BatchSubmissionResponse {
+    pub submissions: Vec<SubmissionResponse>,
+}
+
 #[derive(Debug, Serialize)]
 pub struct LanguageInfo {
     pub id: String,
