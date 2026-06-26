@@ -1,41 +1,55 @@
 # Otter — Sandbox Security & Threat Model
 
-This document outlines the security architecture of the Otter code execution sandbox. 
+This document outlines the security architecture, sandbox design, and threat mitigation strategies implemented in the Otter code execution engine.
 
 ---
 
-## 1. Multi-layered Security Design
-Otter achieves host isolation by combining three distinct layers of Linux kernel security:
+## 1. Sandbox Concurrency & Architecture Overview
 
-```
-+-------------------------------------------------------------+
-|                     Host Linux Kernel                       |
-+-------------------------------------------------------------+
-                              |
-+-------------------------------------------------------------+
-|    Layer 1: Bubblewrap (bwrap) Filesystem & Network Jail    |
-+-------------------------------------------------------------+
-                              |
-+-------------------------------------------------------------+
-|    Layer 2: Unix Resource Limits (rlimits)                  |
-+-------------------------------------------------------------+
-                              |
-+-------------------------------------------------------------+
-|    Layer 3: Seccomp-BPF System Call Allowlist Filters       |
-+-------------------------------------------------------------+
-                              |
-                     [ User Submission ]
+Before code enters the execution sandbox, requests pass through an application-level scheduling layer. The sandbox itself is built using three layers of Linux kernel security.
+
+```text
+       ┌──────────────────────────────────────────────────┐
+       │               Host Linux Kernel                  │
+       └──────────────────────────────────────────────────┘
+                                ▲
+                                │ [Containment]
+       ┌──────────────────────────────────────────────────┐
+       │   Layer 1: Bubblewrap Namespace Containment      │
+       └──────────────────────────────────────────────────┘
+                                ▲
+                                │ [Resource Limits]
+       ┌──────────────────────────────────────────────────┐
+       │   Layer 2: Unix Resource Limits (rlimits)        │
+       └──────────────────────────────────────────────────┘
+                                ▲
+                                │ [Syscall Filter]
+       ┌──────────────────────────────────────────────────┐
+       │   Layer 3: Seccomp-BPF System Call Allowlist     │
+       └──────────────────────────────────────────────────┘
+                                ▲
+                                │ [Execution]
+                       [ User Submission ]
 ```
 
-### Layer 1: Bubblewrap Containment
-* **User Namespace (`--unshare-user`)**: Spawns the child process as an unprivileged user inside the sandbox container. Even if the process executes `setuid(0)` or attempts root escapes, it has no root privileges on the host.
+### Application-Level Concurrency Control
+* **Request Throttling**: The application-level Tokio concurrency cap (enforced by the `MAX_CONCURRENT` semaphore) limits the number of active sandboxes running concurrently.
+* **Scope**: This is an application scheduling concern and is omitted from the kernel security layers as it operates at the API request queue layer before process creation.
+
+---
+
+## 2. Core Sandbox Security Layers
+
+### Layer 1: Bubblewrap Namespace Containment
+Bubblewrap (`bwrap`) is used to isolate the filesystem and network namespaces of the running processes:
+* **User Namespace (`--unshare-user`)**: Spawns the child process as an unprivileged user inside the sandbox container. Even if the process executes `setuid(0)` or attempts root escapes, it has no root privileges on the host system.
 * **Network Isolation (`--unshare-net`)**: Fully disables the sandbox network stack. The sandboxed processes cannot initiate outbound connections, download payloads, scan networks, or open listener ports.
 * **Filesystem Jail (`--ro-bind`)**: Mounts only necessary system paths (`/usr`, `/bin`, `/lib`, `/lib64`, `/sbin`) as read-only.
   * `/tmp` is mounted as a temporary, memory-backed `tmpfs` unique to the execution instance.
-  * `/etc` and other configuration paths are completely excluded. The sandbox cannot read sensitive information like `/etc/passwd`.
+  * `/etc` and other sensitive configuration paths are completely excluded, blocking access to host data (e.g. `/etc/passwd`).
 
 ### Layer 2: Unix Resource Limits (`rlimits`)
-To prevent Denial of Service (DoS) attacks, we apply strict resource limits (`setrlimit`) right before launching the code:
+To prevent Denial of Service (DoS) and host exhaustion attacks, we apply strict resource limits (`setrlimit`) to the process tree:
 * `RLIMIT_CPU`: Soft and hard limits on maximum CPU time in seconds. If exceeded, the kernel immediately terminates the process with `SIGXCPU`.
 * `RLIMIT_AS` / `RLIMIT_DATA`: Restricts virtual memory space allocations. Prevents memory exhaustion attacks (e.g. infinite allocation bombs).
 * `RLIMIT_NPROC`: Limits thread and process creation to prevent fork bombs.
@@ -44,19 +58,30 @@ To prevent Denial of Service (DoS) attacks, we apply strict resource limits (`se
 
 ### Layer 3: Seccomp Syscall Filtering
 We compile and load seccomp-bpf filters dynamically using `libseccomp` before spawning `bwrap`.
-* The seccomp filter uses a strict **default-kill** rule (`KillProcess`). Any system call not explicitly present in the allowlist results in the kernel instantly killing the process via `SIGSYS`.
-* For C/C++, all thread/process spawning syscalls (`clone`/`clone3`) are excluded, neutralizing fork bomb attempts.
-* For interpreted environments (Python/Node.js), thread creation is allowed but network sockets creation (`socket`) and access are restricted.
+* **Default-Kill Rule (`KillProcess`)**: The seccomp filter uses a strict default-kill rule. Any system call not explicitly present in the allowlist results in the kernel instantly killing the process via `SIGSYS`.
+* **C/C++ Rules**: Thread and process spawning syscalls (`clone`/`clone3`) are excluded, neutralizing fork bomb attempts.
+* **Interpreted Rules (Python/Node.js)**: Thread creation is allowed for runtime operation, but network socket creation (`socket`) and access are restricted.
 
 ---
 
-## 2. Threat Model
+## 3. Initialization & Containment Sequence
+
+> [!NOTE]
+> **Setup vs. Containment Order**: The layer diagram illustrates the containment hierarchy (the host kernel contains the bubblewrap sandbox, which bounds Unix rlimits, which bounds the seccomp syscall filters).
+>
+> In terms of initialization sequence, the setup order is the reverse:
+> 1. Unix resource limits (Layer 2) and seccomp filters (Layer 3) are configured on the child process.
+> 2. The child process then executes `execve` to start Bubblewrap, which finalizes the filesystem/network jail wrap (Layer 1).
+
+---
+
+## 4. Threat Matrix & Mitigation Strategies
 
 | Threat Actor | Threat Vector | Target | Containment Strategy |
 | :--- | :--- | :--- | :--- |
 | **Malicious Submission** | Fork Bomb (`while(1) fork()`) | Host System Exhaustion | Blocked by disabling `clone` in C/C++ seccomp. Container-wide thread cap enforced via `RLIMIT_NPROC`. |
 | **Malicious Submission** | Outbound Net Connect (`socket.connect`) | Remote Command Execution / Data Exfiltration | Blocked by `--unshare-net` namespace. Connection attempts fail instantly. |
-| **Malicious Submission** | Disk Filler (`write(infinite)`) | Host Disk Exhaustion | Enforced via `RLIMIT_FSIZE`. The kernel terminates the write with `SIGXFSZ` if it exceeds 256KB. |
+| **Malicious Submission** | Disk Filler (`write(infinite)`) | Host Disk Exhaustion | Enforced via `RLIMIT_FSIZE`. The kernel terminates the write with `SIGXFSZ` if it exceeds `MAX_OUTPUT_BYTES` (default 1MB). |
 | **Malicious Submission** | File System Escape (`read("/etc/passwd")`) | Information Disclosure | Blocked because `/etc` is not mounted. System bindings are strictly read-only. |
-| **Malicious Submission** | Memory Bomb (`a = []`) | Host Memory Exhaustion | Checked by `RLIMIT_AS` (for VSZ) and a physical memory polling monitor (for Javascript RSS). Triggers `Memory Limit Exceeded` (MLE). |
+| **Malicious Submission** | Memory Bomb (`a = []`) | Host Memory Exhaustion | Checked by `RLIMIT_AS` (for VSZ) to trigger `Memory Limit Exceeded` (MLE). *(Note: JS-specific RSS polling is planned for a future release).* |
 | **Malicious Submission** | CPU Bomb (`while(1) {}`) | Host CPU Starvation | Terminated via `RLIMIT_CPU` and a parent Tokio timeout monitor sending `SIGKILL` to the process group. |
