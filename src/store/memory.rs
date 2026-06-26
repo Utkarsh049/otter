@@ -53,4 +53,37 @@ impl SubmissionStore {
     pub fn get(&self, token: &str) -> Option<SubmissionResponse> {
         self.inner.get(token).map(|s| s.clone())
     }
+
+    pub fn get_metrics(&self) -> (usize, f64, f64) {
+        let mut completed = 0;
+        let mut errors = 0;
+        let mut sum_latency = 0;
+        
+        for entry in self.inner.iter() {
+            let res = entry.value();
+            if res.status.id >= 3 {
+                completed += 1;
+                if res.status.id > 3 {
+                    errors += 1;
+                }
+                if let Some(time) = res.time_ms {
+                    sum_latency += time;
+                }
+            }
+        }
+        
+        let error_rate = if completed > 0 {
+            errors as f64 / completed as f64
+        } else {
+            0.0
+        };
+        
+        let avg_latency = if completed > 0 {
+            sum_latency as f64 / completed as f64
+        } else {
+            0.0
+        };
+        
+        (completed, error_rate, avg_latency)
+    }
 }
