@@ -203,28 +203,4 @@ To report a vulnerability: see [`SECURITY.md`](SECURITY.md).
 
 ---
 
-## Contributing
-
-Contributions welcome. Please read [`CONTRIBUTING.md`](CONTRIBUTING.md) first.
-
-The easiest contribution is adding a new language — the architecture makes it straightforward.
-
----
-
-## License
-
-MIT — see [`LICENSE`](LICENSE).
-
----
-
-## Comparison
-
-| | Judge0 | Otter |
-|---|---|---|
-| Language | Ruby/Rails | Rust |
-| Image size | 500MB+ | ~380MB |
-| Works on Heroku | ❌ | ✅ |
-| Works on Railway | ❌ | ✅ |
-| Needs real VM | ✅ required | ❌ not needed |
-| Languages | 60+ | 4 (v1), extensible |
-| Adding a language | Complex | 1 file + 1 line |
+## Made for People who don't want to limit themselves 

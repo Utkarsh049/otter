@@ -81,8 +81,9 @@ impl Worker {
                     );
 
                     if res.status == ExecutionStatus::CompilationError {
-                        let excerpt = if res.compile_output.len() > 200 {
-                            format!("{}... [truncated]", &res.compile_output[..200])
+                        let excerpt = if res.compile_output.chars().count() > 200 {
+                            let taken: String = res.compile_output.chars().take(200).collect();
+                            format!("{}... [truncated]", taken)
                         } else {
                             res.compile_output.clone()
                         };

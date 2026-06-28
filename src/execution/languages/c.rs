@@ -14,11 +14,21 @@ impl Language for C {
     fn needs_compilation(&self) -> bool { true }
 
     async fn compile(&self, ctx: &JobContext) -> Result<CompileOutput> {
-        let output = tokio::process::Command::new("gcc")
+        let output_fut = tokio::process::Command::new("gcc")
             .args(&["main.c", "-o", "program", "-O2", "-Wall", "-Wextra"])
             .current_dir(&ctx.work_dir)
-            .output()
-            .await?;
+            .output();
+        
+        let output = match tokio::time::timeout(std::time::Duration::from_secs(10), output_fut).await {
+            Ok(res) => res?,
+            Err(_) => {
+                return Ok(CompileOutput {
+                    skipped: false,
+                    output: "Compilation timed out after 10 seconds".to_string(),
+                    success: false,
+                });
+            }
+        };
         
         let success = output.status.success();
         let compiler_output = String::from_utf8_lossy(&output.stderr).to_string()

@@ -3,12 +3,22 @@ use std::process::Stdio;
 use tokio::process::Command;
 use tokio::io::{AsyncWriteExt, AsyncReadExt};
 use std::os::unix::process::ExitStatusExt;
+use std::os::unix::io::{FromRawFd, IntoRawFd, RawFd};
 use std::sync::Arc;
 use crate::execution::languages::{Language, JobContext};
 use crate::execution::result::{ExecutionResult, ExecutionStatus};
 use crate::execution::limits::Limits;
 use nix::sys::resource::{setrlimit, Resource};
 
+struct FdGuard(RawFd);
+
+impl Drop for FdGuard {
+    fn drop(&mut self) {
+        unsafe {
+            nix::libc::close(self.0);
+        }
+    }
+}
 
 pub struct Engine;
 
@@ -146,7 +156,8 @@ impl Engine {
         }
 
         let read_file = std::fs::File::open(&filter_path)?;
-        let seccomp_fd = std::os::unix::io::IntoRawFd::into_raw_fd(read_file);
+        let seccomp_fd = read_file.into_raw_fd();
+        let _seccomp_guard = FdGuard(seccomp_fd);
 
         // Resolve the program path
         let resolved = if program.starts_with("/") || program.starts_with("./") {
@@ -171,8 +182,12 @@ impl Engine {
         if res == -1 {
             return Err(std::io::Error::last_os_error().into());
         }
-        let pid_read_raw = pid_fds[0];
+        
+        let pid_read_file = unsafe { std::fs::File::from_raw_fd(pid_fds[0]) };
+        let mut pid_tokio_file = tokio::fs::File::from_std(pid_read_file);
+        
         let pid_write_raw = pid_fds[1];
+        let pid_write_guard = FdGuard(pid_write_raw);
 
         // Construct bubblewrap arguments
         let mut bwrap_args = vec![
@@ -259,15 +274,13 @@ impl Engine {
         let pid = child.id().ok_or_else(|| anyhow::anyhow!("Failed to get child PID"))?;
 
         // Close parent's copy of write fd so EOF is sent
-        unsafe { nix::libc::close(pid_write_raw); }
+        drop(pid_write_guard);
 
         // Read the actual sandboxed process PID from the pipe
         let mut target_pid = pid;
         {
-            use std::os::unix::io::FromRawFd;
-            let mut pid_file = unsafe { tokio::fs::File::from_raw_fd(pid_read_raw) };
             let mut pid_buf = vec![0u8; 512];
-            match pid_file.read(&mut pid_buf).await {
+            match pid_tokio_file.read(&mut pid_buf).await {
                 Ok(n) => {
                     println!("DEBUG READ PID: n={}, content={:?}", n, String::from_utf8_lossy(&pid_buf[..n]));
                     if n > 0 {
