@@ -251,6 +251,10 @@ impl Engine {
                 let cpu_secs = (cpu_time_ms + 999) / 1000;
                 let _ = setrlimit(Resource::RLIMIT_CPU, cpu_secs, cpu_secs);
 
+                // Skip RLIMIT_AS for JavaScript because the V8 engine pre-allocates
+                // a 4GB virtual memory address space for pointer compression on 64-bit systems.
+                // Setting virtual memory limits below 4GB causes Node to crash on startup.
+                // Instead, JavaScript physical memory is monitored via VmHWM polling.
                 if !is_javascript {
                     let mem_bytes = memory_mb * 1024 * 1024;
                     let _ = setrlimit(Resource::RLIMIT_AS, mem_bytes, mem_bytes);
@@ -282,7 +286,11 @@ impl Engine {
             let mut pid_buf = vec![0u8; 512];
             match pid_tokio_file.read(&mut pid_buf).await {
                 Ok(n) => {
-                    println!("DEBUG READ PID: n={}, content={:?}", n, String::from_utf8_lossy(&pid_buf[..n]));
+                    tracing::debug!(
+                        n = n,
+                        content = ?String::from_utf8_lossy(&pid_buf[..n]),
+                        "Read sandboxed child PID from info-fd"
+                    );
                     if n > 0 {
                         if let Ok(val) = serde_json::from_slice::<serde_json::Value>(&pid_buf[..n]) {
                             if let Some(child_pid) = val.get("child-pid").and_then(|v| v.as_u64()) {
@@ -292,7 +300,7 @@ impl Engine {
                     }
                 }
                 Err(e) => {
-                    println!("DEBUG READ PID ERROR: {:?}", e);
+                    tracing::debug!(error = ?e, "Failed to read child PID from info-fd");
                 }
             }
         }
