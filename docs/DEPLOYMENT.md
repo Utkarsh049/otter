@@ -148,13 +148,13 @@ Because the sandbox utilizes `bubblewrap` (`bwrap`) to jail execution, the host 
 
 To check if your host OS allows this, run:
 ```bash
-sysctl sys.kernel.unprivileged_userns_clone
+sysctl kernel.unprivileged_userns_clone
 ```
 
 If it returns `1`, unprivileged user namespaces are enabled.
 If it returns `0`, you can temporarily enable it by running:
 ```bash
-sudo sysctl -w sys.kernel.unprivileged_userns_clone=1
+sudo sysctl -w kernel.unprivileged_userns_clone=1
 ```
-To persist this setting, add `sys.kernel.unprivileged_userns_clone=1` to `/etc/sysctl.conf`.
+To persist this setting, add `kernel.unprivileged_userns_clone=1` to `/etc/sysctl.conf`.
 

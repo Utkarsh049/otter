@@ -14,7 +14,7 @@ Create a new file under `src/execution/languages/` (e.g. `src/execution/language
 
 ```rust
 use async_trait::async_trait;
-use crate::execution::languages::{Language, JobContext, CompileResult};
+use crate::execution::languages::{Language, JobContext, CompileOutput};
 use crate::execution::result::ExecutionResult;
 use crate::execution::engine::Engine;
 use anyhow::Result;
@@ -23,43 +23,44 @@ pub struct Go;
 
 #[async_trait]
 impl Language for Go {
-    fn id(&self) -> &'static str {
-        "go"
-    }
+    fn id(&self)             -> &'static str { "go" }
+    fn name(&self)           -> &'static str { "Go" }
+    fn version(&self)        -> &'static str { "Go 1.20+" }
+    fn file_extension(&self) -> &'static str { "go" }
+    fn needs_compilation(&self) -> bool { true }
 
-    fn name(&self) -> &'static str {
-        "Go"
-    }
-
-    fn version(&self) -> &'static str {
-        "Go 1.20+"
-    }
-
-    fn file_extension(&self) -> &'static str {
-        "go"
-    }
-
-    fn needs_compilation(&self) -> bool {
-        true
-    }
-
-    async fn compile(&self, ctx: &JobContext) -> Result<CompileResult> {
-        // Go compiling command: go build -o program main.go
-        let compile_output = Engine::run_command_raw(
-            "go",
-            &["build", "-o", "program", "main.go"],
-            ctx
-        ).await?;
+    async fn compile(&self, ctx: &JobContext) -> Result<CompileOutput> {
+        // Run compilation using tokio::process::Command with a safety timeout
+        let output_fut = tokio::process::Command::new("go")
+            .args(&["build", "-o", "program", "main.go"])
+            .current_dir(&ctx.work_dir)
+            .output();
         
-        Ok(CompileResult {
-            success: compile_output.status.is_success(),
-            output: compile_output.stderr, // Compiler warnings/errors go to stderr
+        let output = match tokio::time::timeout(std::time::Duration::from_secs(10), output_fut).await {
+            Ok(res) => res?,
+            Err(_) => {
+                return Ok(CompileOutput {
+                    skipped: false,
+                    output: "Compilation timed out after 10 seconds".to_string(),
+                    success: false,
+                });
+            }
+        };
+        
+        let success = output.status.success();
+        let compiler_output = String::from_utf8_lossy(&output.stderr).to_string()
+            + &String::from_utf8_lossy(&output.stdout);
+            
+        Ok(CompileOutput {
+            skipped: false,
+            output: compiler_output,
+            success,
         })
     }
 
     async fn run(&self, ctx: &JobContext) -> Result<ExecutionResult> {
-        // Run the compiled binary
-        Engine::run_command(self.id(), "./program", &[], ctx).await
+        // Run the compiled binary inside the sandbox
+        Engine::run_command("go", "./program", &[], ctx).await
     }
 }
 ```
@@ -79,13 +80,13 @@ Expose the new module and add the struct instance to the language registry.
 
    impl LanguageRegistry {
        pub fn build() -> Self {
-           let mut registry = Self::new();
-           registry.register(Arc::new(C));
-           registry.register(Arc::new(Cpp));
-           registry.register(Arc::new(Python));
-           registry.register(Arc::new(JavaScript));
-           registry.register(Arc::new(Go)); // Register Go here
-           registry
+           let mut r = Self { languages: std::collections::HashMap::new() };
+           r.register(C);
+           r.register(Cpp);
+           r.register(Python);
+           r.register(JavaScript);
+           r.register(Go); // Register Go here
+           r
        }
    }
    ```
