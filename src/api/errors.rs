@@ -7,6 +7,7 @@ pub enum ApiError {
     NotFound(String),
     BadRequest(String),
     InternalError(String),
+    TooManyRequests(String),
 }
 
 impl IntoResponse for ApiError {
@@ -15,6 +16,7 @@ impl IntoResponse for ApiError {
             ApiError::NotFound(m)      => (StatusCode::NOT_FOUND, m),
             ApiError::BadRequest(m)    => (StatusCode::BAD_REQUEST, m),
             ApiError::InternalError(m) => (StatusCode::INTERNAL_SERVER_ERROR, m),
+            ApiError::TooManyRequests(m) => (StatusCode::TOO_MANY_REQUESTS, m),
         };
         (status, Json(json!({ "error": message }))).into_response()
     }

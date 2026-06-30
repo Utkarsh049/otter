@@ -320,3 +320,35 @@ async fn test_exceeded_limit_validation() {
     let body = response.json::<serde_json::Value>();
     assert!(body["error"].as_str().unwrap().contains("cannot exceed server limit"));
 }
+
+#[tokio::test]
+async fn test_queue_capacity_limit() {
+    let mut settings = get_test_settings();
+    settings.max_queue_depth = 2; // Very tight queue limit
+
+    let app = build_router(settings);
+    let server = TestServer::new(app).unwrap();
+
+    let request_payload = SubmissionRequest {
+        language: "python".to_string(),
+        source_code: "import time\ntime.sleep(1.0)".to_string(),
+        stdin: "".to_string(),
+        cpu_time_limit_ms: None,
+        memory_limit_mb: None,
+        wall_time_limit_ms: None,
+    };
+
+    // Submit 1st -> ok
+    let response1 = server.post("/submissions").json(&request_payload).await;
+    response1.assert_status(axum::http::StatusCode::CREATED);
+
+    // Submit 2nd -> ok
+    let response2 = server.post("/submissions").json(&request_payload).await;
+    response2.assert_status(axum::http::StatusCode::CREATED);
+
+    // Submit 3rd -> 429 Too Many Requests (since capacity is 2)
+    let response3 = server.post("/submissions").json(&request_payload).await;
+    response3.assert_status(axum::http::StatusCode::TOO_MANY_REQUESTS);
+    let body = response3.json::<serde_json::Value>();
+    assert!(body["error"].as_str().unwrap().contains("server is at capacity"));
+}

@@ -9,6 +9,7 @@ pub struct Settings {
     pub wall_limit_ms: u64,
     pub memory_limit_mb: u64,
     pub max_output_bytes: usize,
+    pub max_queue_depth: usize,
     pub redis_url: Option<String>,
     pub rate_limit_requests: Option<u64>,
     pub rate_limit_window_seconds: Option<u64>,
@@ -24,6 +25,7 @@ impl Default for Settings {
             wall_limit_ms: 10000,
             memory_limit_mb: 128,
             max_output_bytes: 1048576,
+            max_queue_depth: 100,
             redis_url: None,
             rate_limit_requests: None,
             rate_limit_window_seconds: None,
@@ -59,6 +61,10 @@ impl Settings {
                 .unwrap_or("1048576".into())
                 .parse()
                 .context("MAX_OUTPUT_BYTES must be a number")?,
+            max_queue_depth: std::env::var("MAX_QUEUE_DEPTH")
+                .unwrap_or("100".into())
+                .parse()
+                .context("MAX_QUEUE_DEPTH must be a number")?,
             redis_url: std::env::var("REDIS_URL").ok(),
             rate_limit_requests: std::env::var("RATE_LIMIT_REQUESTS").ok()
                 .and_then(|s| s.parse().ok()),

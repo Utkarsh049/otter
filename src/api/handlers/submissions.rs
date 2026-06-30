@@ -49,7 +49,7 @@ pub async fn submit(
         req.source_code,
         req.stdin,
         limits,
-    );
+    )?;
     
     Ok((
         axum::http::StatusCode::CREATED,
@@ -88,6 +88,13 @@ pub async fn submit_batch(
         }
     }
 
+    // Check queue capacity for the entire batch
+    if worker.queue_depth() + req_batch.submissions.len() > worker.max_queue_depth() {
+        return Err(ApiError::TooManyRequests(
+            "server is at capacity, try again shortly".to_string()
+        ));
+    }
+
     let mut responses = Vec::new();
 
     for req in req_batch.submissions {
@@ -108,7 +115,7 @@ pub async fn submit_batch(
             req.source_code,
             req.stdin,
             limits,
-        );
+        )?;
 
         responses.push(SubmissionResponse {
             token,

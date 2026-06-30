@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use tokio::sync::Semaphore;
 use crate::config::Settings;
 use crate::store::memory::SubmissionStore;
@@ -8,11 +9,21 @@ use crate::execution::limits::Limits;
 use crate::api::models::status::StatusCode;
 use crate::execution::result::ExecutionStatus;
 
+struct QueueDepthGuard(Arc<AtomicUsize>);
+
+impl Drop for QueueDepthGuard {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
 pub struct Worker {
     semaphore: Arc<Semaphore>,
     store: Arc<SubmissionStore>,
     registry: Arc<LanguageRegistry>,
     max_concurrent: usize,
+    queue_depth: Arc<AtomicUsize>,
+    max_queue_depth: usize,
 }
 
 impl Worker {
@@ -22,11 +33,21 @@ impl Worker {
             store,
             registry,
             max_concurrent: settings.max_concurrent,
+            queue_depth: Arc::new(AtomicUsize::new(0)),
+            max_queue_depth: settings.max_queue_depth,
         }
     }
 
     pub fn in_flight(&self) -> usize {
         self.max_concurrent.saturating_sub(self.semaphore.available_permits())
+    }
+
+    pub fn queue_depth(&self) -> usize {
+        self.queue_depth.load(Ordering::Relaxed)
+    }
+
+    pub fn max_queue_depth(&self) -> usize {
+        self.max_queue_depth
     }
 
     pub fn enqueue(
@@ -36,14 +57,25 @@ impl Worker {
         source_code: String,
         stdin: String,
         limits: Limits,
-    ) {
+    ) -> Result<(), crate::api::errors::ApiError> {
+        let current = self.queue_depth.load(Ordering::Relaxed);
+        if current >= self.max_queue_depth {
+            return Err(crate::api::errors::ApiError::TooManyRequests(
+                "server is at capacity, try again shortly".to_string()
+            ));
+        }
+
+        self.queue_depth.fetch_add(1, Ordering::Relaxed);
+
         let semaphore = self.semaphore.clone();
         let store = self.store.clone();
         let registry = self.registry.clone();
         let language_id_log = language_id.clone();
         let token_log = token.clone();
+        let queue_depth = self.queue_depth.clone();
         
         tokio::spawn(async move {
+            let _guard = QueueDepthGuard(queue_depth);
             let permit = match semaphore.acquire().await {
                 Ok(p) => p,
                 Err(e) => {
@@ -127,5 +159,6 @@ impl Worker {
             
             drop(permit);
         });
+        Ok(())
     }
 }
