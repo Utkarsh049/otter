@@ -270,6 +270,9 @@ impl Engine {
                 let nofile = 128;
                 let _ = setrlimit(Resource::RLIMIT_NOFILE, nofile, nofile);
 
+                // Set low CPU scheduling priority (nice = 15) to prevent starving the API server
+                let _ = nix::libc::setpriority(nix::libc::PRIO_PROCESS, 0, 15);
+
                 Ok(())
             });
         }
