@@ -4,6 +4,11 @@ use anyhow::Result;
 async fn main() -> Result<()> {
     dotenvy::dotenv().ok();
     
+    // Maximize soft process limit (RLIMIT_NPROC) up to the hard OS limit at startup
+    if let Ok((_soft, hard)) = nix::sys::resource::getrlimit(nix::sys::resource::Resource::RLIMIT_NPROC) {
+        let _ = nix::sys::resource::setrlimit(nix::sys::resource::Resource::RLIMIT_NPROC, hard, hard);
+    }
+    
     let env_log_format = std::env::var("LOG_FORMAT").unwrap_or_default();
     let is_production = std::env::var("APP_ENV").unwrap_or_default() == "production" 
         || env_log_format == "json";

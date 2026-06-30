@@ -14,7 +14,7 @@ impl Default for Limits {
             wall_time_ms: 10000,
             memory_mb: 128,
             max_output_bytes: 1_048_576,
-            max_processes: 32,
+            max_processes: 16,
         }
     }
 }

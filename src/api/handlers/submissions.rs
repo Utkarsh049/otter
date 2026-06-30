@@ -26,11 +26,11 @@ pub async fn submit(
 
     req.validate(&settings)?;
 
-    if registry.get(&req.language).is_none() {
-        return Err(ApiError::BadRequest(
+    let lang = registry.get(&req.language).ok_or_else(|| {
+        ApiError::BadRequest(
             format!("unsupported language: '{}'", req.language)
-        ));
-    }
+        )
+    })?;
     
     let token = Uuid::new_v4().to_string();
     store.insert(token.clone(), StatusCode::queued());
@@ -40,7 +40,7 @@ pub async fn submit(
         wall_time_ms: req.wall_time_limit_ms.unwrap_or(settings.wall_limit_ms),
         memory_mb: req.memory_limit_mb.unwrap_or(settings.memory_limit_mb),
         max_output_bytes: settings.max_output_bytes,
-        max_processes: 32,
+        max_processes: lang.default_limits().max_processes,
     };
     
     worker.enqueue(
@@ -98,6 +98,7 @@ pub async fn submit_batch(
     let mut responses = Vec::new();
 
     for req in req_batch.submissions {
+        let lang = registry.get(&req.language).unwrap();
         let token = Uuid::new_v4().to_string();
         store.insert(token.clone(), StatusCode::queued());
         
@@ -106,7 +107,7 @@ pub async fn submit_batch(
             wall_time_ms: req.wall_time_limit_ms.unwrap_or(settings.wall_limit_ms),
             memory_mb: req.memory_limit_mb.unwrap_or(settings.memory_limit_mb),
             max_output_bytes: settings.max_output_bytes,
-            max_processes: 32,
+            max_processes: lang.default_limits().max_processes,
         };
         
         worker.enqueue(
