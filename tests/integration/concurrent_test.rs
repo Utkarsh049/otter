@@ -145,3 +145,85 @@ async fn test_memory_leak_and_consistency() {
         assert!(finished, "Submission {} did not finish", i);
     }
 }
+
+#[tokio::test]
+async fn test_per_ip_concurrency_capping() {
+    // 1. Build server with max_concurrent = 4, max_concurrent_per_ip = 1
+    let mut settings = get_test_settings(4);
+    settings.max_concurrent_per_ip = 1; // 1 job per IP concurrently
+    let app = build_router(settings);
+    let server = TestServer::new(app).unwrap();
+
+    // 2. Submit 2 long-running jobs (sleep 200ms each) from IP "1.1.1.1"
+    let mut tokens_ip1 = Vec::new();
+    for _ in 0..2 {
+        let request_payload = SubmissionRequest {
+            language: "python".to_string(),
+            source_code: "import time; time.sleep(0.2)".to_string(),
+            stdin: "".to_string(),
+            cpu_time_limit_ms: None,
+            memory_limit_mb: None,
+            wall_time_limit_ms: None,
+        };
+        let response = server.post("/submissions")
+            .add_header(
+                axum::http::HeaderName::from_static("x-forwarded-for"),
+                axum::http::HeaderValue::from_static("1.1.1.1")
+            )
+            .json(&request_payload)
+            .await;
+        response.assert_status(axum::http::StatusCode::CREATED);
+        tokens_ip1.push(response.json::<SubmissionResponse>().token);
+    }
+
+    // 3. Submit 1 long-running job from IP "2.2.2.2"
+    let request_payload_ip2 = SubmissionRequest {
+        language: "python".to_string(),
+        source_code: "import time; time.sleep(0.2)".to_string(),
+        stdin: "".to_string(),
+        cpu_time_limit_ms: None,
+        memory_limit_mb: None,
+        wall_time_limit_ms: None,
+    };
+    let response_ip2 = server.post("/submissions")
+        .add_header(
+            axum::http::HeaderName::from_static("x-forwarded-for"),
+            axum::http::HeaderValue::from_static("2.2.2.2")
+        )
+        .json(&request_payload_ip2)
+        .await;
+    response_ip2.assert_status(axum::http::StatusCode::CREATED);
+    let token_ip2 = response_ip2.json::<SubmissionResponse>().token;
+
+    // 4. Poll status during execution.
+    // - Since IP 1 is capped at 1 running job, only 1 of its 2 jobs should be Processing.
+    // - IP 2 has 1 job, which should run immediately in Processing (since global cap is 4).
+    let mut peak_ip1_processing = 0;
+    let mut peak_ip2_processing = 0;
+    let start_time = std::time::Instant::now();
+
+    while start_time.elapsed() < Duration::from_millis(300) {
+        let mut ip1_processing = 0;
+        for token in &tokens_ip1 {
+            let res = server.get(&format!("/submissions/{}", token)).await;
+            res.assert_status_ok();
+            let poll_res = res.json::<SubmissionResponse>();
+            if poll_res.status.id == 2 { // Processing
+                ip1_processing += 1;
+            }
+        }
+        peak_ip1_processing = peak_ip1_processing.max(ip1_processing);
+
+        let res_ip2 = server.get(&format!("/submissions/{}", token_ip2)).await;
+        res_ip2.assert_status_ok();
+        let poll_res_ip2 = res_ip2.json::<SubmissionResponse>();
+        if poll_res_ip2.status.id == 2 { // Processing
+            peak_ip2_processing = 1;
+        }
+
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+
+    assert!(peak_ip1_processing <= 1, "IP 1 peak processing count was {} (exceeded cap 1)", peak_ip1_processing);
+    assert_eq!(peak_ip2_processing, 1, "IP 2 job did not start processing");
+}

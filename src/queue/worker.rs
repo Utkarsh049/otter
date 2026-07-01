@@ -1,5 +1,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::net::IpAddr;
+use dashmap::DashMap;
 use tokio::sync::Semaphore;
 use crate::config::Settings;
 use crate::store::memory::SubmissionStore;
@@ -24,6 +26,8 @@ pub struct Worker {
     max_concurrent: usize,
     queue_depth: Arc<AtomicUsize>,
     max_queue_depth: usize,
+    user_semaphores: Arc<DashMap<IpAddr, Arc<Semaphore>>>,
+    max_concurrent_per_ip: usize,
 }
 
 impl Worker {
@@ -35,6 +39,8 @@ impl Worker {
             max_concurrent: settings.max_concurrent,
             queue_depth: Arc::new(AtomicUsize::new(0)),
             max_queue_depth: settings.max_queue_depth,
+            user_semaphores: Arc::new(DashMap::new()),
+            max_concurrent_per_ip: settings.max_concurrent_per_ip,
         }
     }
 
@@ -57,6 +63,7 @@ impl Worker {
         source_code: String,
         stdin: String,
         limits: Limits,
+        ip: IpAddr,
     ) -> Result<(), crate::api::errors::ApiError> {
         let current = self.queue_depth.load(Ordering::Relaxed);
         if current >= self.max_queue_depth {
@@ -74,8 +81,25 @@ impl Worker {
         let token_log = token.clone();
         let queue_depth = self.queue_depth.clone();
         
+        let ip_sem = self.user_semaphores
+            .entry(ip)
+            .or_insert_with(|| Arc::new(Semaphore::new(self.max_concurrent_per_ip)))
+            .value()
+            .clone();
+
         tokio::spawn(async move {
             let _guard = QueueDepthGuard(queue_depth);
+            
+            // Acquire IP-specific permit first to avoid global lock contention / HOL blocking
+            let _ip_permit = match ip_sem.acquire().await {
+                Ok(p) => p,
+                Err(e) => {
+                    tracing::error!("Failed to acquire IP semaphore permit: {:?}", e);
+                    store.update_status(&token, StatusCode::internal_error());
+                    return;
+                }
+            };
+
             let permit = match semaphore.acquire().await {
                 Ok(p) => p,
                 Err(e) => {

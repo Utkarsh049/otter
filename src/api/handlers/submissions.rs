@@ -1,6 +1,8 @@
 use axum::{Extension, Json};
-use axum::extract::Path;
+use axum::extract::{Path, ConnectInfo};
+use axum::http::HeaderMap;
 use std::sync::Arc;
+use std::net::{SocketAddr, IpAddr};
 use uuid::Uuid;
 use crate::api::errors::ApiError;
 use crate::api::models::request::{SubmissionRequest, BatchSubmissionRequest};
@@ -12,11 +14,27 @@ use crate::queue::worker::Worker;
 use crate::config::Settings;
 use crate::execution::limits::Limits;
 
+fn get_client_ip(headers: &HeaderMap, connect_info: Option<ConnectInfo<SocketAddr>>) -> IpAddr {
+    let fallback_ip = connect_info.map(|c| c.0.ip()).unwrap_or_else(|| "127.0.0.1".parse().unwrap());
+    headers.get("x-forwarded-for")
+        .and_then(|h| h.to_str().ok())
+        .and_then(|s| s.split(',').next())
+        .and_then(|s| s.trim().parse::<IpAddr>().ok())
+        .or_else(|| {
+            headers.get("x-real-ip")
+                .and_then(|h| h.to_str().ok())
+                .and_then(|s| s.trim().parse::<IpAddr>().ok())
+        })
+        .unwrap_or(fallback_ip)
+}
+
 pub async fn submit(
     Extension(settings): Extension<Settings>,
     Extension(registry): Extension<Arc<LanguageRegistry>>,
     Extension(store): Extension<Arc<SubmissionStore>>,
     Extension(worker): Extension<Arc<Worker>>,
+    headers: HeaderMap,
+    connect_info: Option<ConnectInfo<SocketAddr>>,
     payload: Result<Json<SubmissionRequest>, axum::extract::rejection::JsonRejection>,
 ) -> Result<(axum::http::StatusCode, Json<SubmissionResponse>), ApiError> {
     let Json(req) = match payload {
@@ -43,12 +61,15 @@ pub async fn submit(
         max_processes: lang.default_limits().max_processes,
     };
     
+    let ip = get_client_ip(&headers, connect_info);
+    
     worker.enqueue(
         token.clone(),
         req.language,
         req.source_code,
         req.stdin,
         limits,
+        ip,
     )?;
     
     Ok((
@@ -71,6 +92,8 @@ pub async fn submit_batch(
     Extension(registry): Extension<Arc<LanguageRegistry>>,
     Extension(store): Extension<Arc<SubmissionStore>>,
     Extension(worker): Extension<Arc<Worker>>,
+    headers: HeaderMap,
+    connect_info: Option<ConnectInfo<SocketAddr>>,
     payload: Result<Json<BatchSubmissionRequest>, axum::extract::rejection::JsonRejection>,
 ) -> Result<(axum::http::StatusCode, Json<BatchSubmissionResponse>), ApiError> {
     let Json(req_batch) = match payload {
@@ -96,6 +119,7 @@ pub async fn submit_batch(
     }
 
     let mut responses = Vec::new();
+    let ip = get_client_ip(&headers, connect_info);
 
     for req in req_batch.submissions {
         let lang = registry.get(&req.language).unwrap();
@@ -116,6 +140,7 @@ pub async fn submit_batch(
             req.source_code,
             req.stdin,
             limits,
+            ip,
         )?;
 
         responses.push(SubmissionResponse {
