@@ -30,7 +30,7 @@ impl Engine {
         limits: Limits,
     ) -> Result<ExecutionResult> {
         let job_id = uuid::Uuid::new_v4().to_string();
-        let work_dir = std::path::PathBuf::from("/dev/shm").join(format!("otter-{}", job_id));
+        let work_dir = std::path::PathBuf::from("/tmp").join(format!("otter-{}", job_id));
         
         tokio::fs::create_dir_all(&work_dir).await?;
         
@@ -111,7 +111,8 @@ impl Engine {
                         "socket", "connect", "sendto", "recvfrom", "sendmsg", "recvmsg",
                         "setsockopt", "getsockopt", "getsockname", "getpeername", "bind", "listen", "accept", "accept4", "socketpair",
                         "sched_getparam", "sched_setparam", "sched_getscheduler", "sched_setscheduler", "sched_get_priority_max", "sched_get_priority_min",
-                        "clock_nanosleep"
+                        "clock_nanosleep", "faccessat", "faccessat2", "pkey_alloc", "pkey_free", "pkey_mprotect", "readlinkat", "statfs", "signalfd4",
+                        "epoll_create1", "epoll_ctl", "epoll_wait", "epoll_pwait", "epoll_pwait2"
                     ],
                     "python" => &[
                         "read", "write", "open", "openat", "close", "fstat", "stat", "lstat",
@@ -127,7 +128,8 @@ impl Engine {
                         "socket", "connect", "sendto", "recvfrom", "sendmsg", "recvmsg",
                         "setsockopt", "getsockopt", "getsockname", "getpeername", "bind", "listen", "accept", "accept4", "socketpair",
                         "sched_getparam", "sched_setparam", "sched_getscheduler", "sched_setscheduler", "sched_get_priority_max", "sched_get_priority_min",
-                        "clock_nanosleep"
+                        "clock_nanosleep", "faccessat", "faccessat2", "pkey_alloc", "pkey_free", "pkey_mprotect", "readlinkat", "statfs", "signalfd4",
+                        "epoll_create1", "epoll_ctl", "epoll_wait", "epoll_pwait", "epoll_pwait2"
                     ],
                     "javascript" => &[
                         "read", "write", "open", "openat", "close", "fstat", "stat", "lstat",
@@ -142,11 +144,11 @@ impl Engine {
                         "epoll_create1", "epoll_ctl", "epoll_wait", "eventfd2", "timerfd_create",
                         "timerfd_settime", "pipe", "pipe2", "socketpair", "shutdown", "execve",
                         "pread64", "pwrite64", "rseq", "capget", "prctl", "io_uring_setup",
-                        "io_uring_enter", "io_uring_register", "epoll_pwait",
+                        "io_uring_enter", "io_uring_register", "epoll_pwait", "epoll_pwait2",
                         "socket", "connect", "sendto", "recvfrom", "sendmsg", "recvmsg",
                         "setsockopt", "getsockopt", "getsockname", "getpeername", "bind", "listen", "accept", "accept4",
                         "sched_getparam", "sched_setparam", "sched_getscheduler", "sched_setscheduler", "sched_get_priority_max", "sched_get_priority_min",
-                        "clock_nanosleep"
+                        "clock_nanosleep", "faccessat", "faccessat2", "pkey_alloc", "pkey_free", "pkey_mprotect", "readlinkat", "statfs", "signalfd4"
                     ],
                     _ => &[]
                 };

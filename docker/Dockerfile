@@ -1,12 +1,17 @@
 # Stage 1: Build the Rust API application
-FROM rust:1.75-slim AS builder
+FROM rust:slim-bookworm AS builder
 
 WORKDIR /usr/src/otter
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    pkg-config \
+    libseccomp-dev \
+    && rm -rf /var/lib/apt/lists/*
+
 COPY . .
 RUN cargo build --release
 
 # Stage 2: Create the test runner image
-FROM rust:1.75-slim AS tester
+FROM rust:slim-bookworm AS tester
 
 WORKDIR /usr/src/otter
 COPY . .
@@ -18,7 +23,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     python3-minimal \
     nodejs \
     bubblewrap \
-    libseccomp2 \
+    pkg-config \
+    libseccomp-dev \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 

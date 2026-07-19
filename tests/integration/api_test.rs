@@ -78,7 +78,7 @@ async fn test_submit_and_poll_happy_path() {
             finished = true;
             break;
         } else if poll_res.status.id > 3 {
-            panic!("Unexpected failed status: {:?}", poll_res.status);
+            panic!("Unexpected failed status: {:?}, stdout: {:?}, stderr: {:?}, exit_code: {:?}", poll_res.status, poll_res.stdout, poll_res.stderr, poll_res.exit_code);
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
@@ -163,6 +163,8 @@ async fn test_metrics_endpoint() {
         if poll_res.status.id == 3 {
             finished = true;
             break;
+        } else if poll_res.status.id > 3 {
+            panic!("Metrics test job failed with status: {:?}, stdout: {:?}, stderr: {:?}, exit_code: {:?}", poll_res.status, poll_res.stdout, poll_res.stderr, poll_res.exit_code);
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
@@ -271,10 +273,12 @@ async fn test_batch_submissions() {
             assert_eq!(poll.stdout.unwrap(), "batch 2\n");
             finished2 = true;
             break;
+        } else if poll.status.id > 3 {
+            panic!("Batch 2 failed with status: {:?}, stdout: {:?}, stderr: {:?}, exit_code: {:?}", poll.status, poll.stdout, poll.stderr, poll.exit_code);
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
-    assert!(finished2);
+    assert!(finished2, "Batch 2 did not finish");
 }
 
 #[tokio::test]
