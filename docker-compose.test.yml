@@ -4,5 +4,6 @@ services:
       context: .
       dockerfile: docker/Dockerfile
       target: tester
+      network: host
     environment:
       - RUST_LOG=info
