@@ -5,6 +5,7 @@ pub struct Limits {
     pub memory_mb: u64,
     pub max_output_bytes: usize,
     pub max_processes: u32,
+    pub disable_sandbox: bool,
 }
 
 impl Default for Limits {
@@ -15,6 +16,7 @@ impl Default for Limits {
             memory_mb: 128,
             max_output_bytes: 1_048_576,
             max_processes: 16,
+            disable_sandbox: false,
         }
     }
 }
