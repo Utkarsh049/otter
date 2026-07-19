@@ -29,9 +29,10 @@ Create a `.env` file in the root of the project to manage environment variables:
 ---
 
 ## 2. Local Docker Deployment
-To run the server in a local containerized environment:
+To run the server or execute tests in a local containerized environment:
 
-### Build the Docker Image
+### Build the Production Image
+By default, building the image compiles the server and builds the slim production runner:
 ```bash
 docker build -f docker/Dockerfile -t otter:latest .
 ```
@@ -44,6 +45,12 @@ docker run -p 8080:8080 \
   -e RATE_LIMIT_REQUESTS=100 \
   -e RATE_LIMIT_WINDOW_SECONDS=60 \
   otter:latest
+```
+
+### Run Tests in the Container (Isolated Test Suite)
+We define a separate `tester` stage in the Dockerfile that includes the full Rust toolchain and compilers. You can run the entire test suite inside an isolated container with a single command:
+```bash
+docker compose -f docker-compose.test.yml up --build --exit-code-from test-runner
 ```
 
 ---
@@ -157,4 +164,13 @@ If it returns `0`, you can temporarily enable it by running:
 sudo sysctl -w kernel.unprivileged_userns_clone=1
 ```
 To persist this setting, add `kernel.unprivileged_userns_clone=1` to `/etc/sysctl.conf`.
+
+### Automatic Fallback on Restricted Platforms (e.g., Heroku, Render)
+On shared container hosting platforms (such as Heroku or some Render plans) where `CLONE_NEWUSER` (unprivileged namespaces) is blocked at the hypervisor level, bubblewrap will fail to initialize. 
+
+Otter automatically detects namespace support at startup:
+* If namespaces are unsupported, Otter **gracefully falls back to un-jailed raw mode** (executing processes directly on the host rather than inside `bwrap`).
+* Even in raw fallback mode, Otter **still enforces all process limits** (`RLIMIT_CPU`, `RLIMIT_AS`, `RLIMIT_NPROC`, `RLIMIT_FSIZE`, `RLIMIT_NOFILE`, and low CPU priority) using standard Unix system calls, protecting the host system from resource exhaustion.
+* You can also explicitly force raw fallback mode by setting the environment variable:
+  `DISABLE_SANDBOX=true`
 

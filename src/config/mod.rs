@@ -78,7 +78,7 @@ impl Settings {
                     val.parse().unwrap_or(false)
                 } else {
                     let sandbox_supported = std::process::Command::new("bwrap")
-                        .args(&["--unshare-user", "--true"])
+                        .args(&["--unshare-user", "--ro-bind", "/", "/", "--", "true"])
                         .status()
                         .map(|s| s.success())
                         .unwrap_or(false);
