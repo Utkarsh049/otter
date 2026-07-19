@@ -24,7 +24,7 @@ Otter:   works in containers ✅ Heroku  ✅ Railway  ✅ Render  ✅ Docker any
 - **Accurate metrics** — real CPU time, peak memory, exit code per submission
 - **Extensible** — adding a new language is one file and one line
 - **Production grade** — structured logging, graceful shutdown, bounded concurrency
-- **Lightweight** — ~380MB Docker image, ~20MB RAM for the API itself
+- **Lightweight** — ~157MB production Docker image (618MB total on disk), ~20MB RAM for the API itself
 
 ---
 
@@ -33,7 +33,7 @@ Otter:   works in containers ✅ Heroku  ✅ Railway  ✅ Render  ✅ Docker any
 ```bash
 git clone https://github.com/your-username/otter
 cd otter
-docker compose up
+docker compose up --build -d
 ```
 
 API is running at `http://localhost:8080`.
@@ -144,8 +144,11 @@ All configuration is via environment variables. Copy `.env.example` to `.env` an
 
 ### Docker (any platform)
 ```bash
-docker build -f docker/Dockerfile -t otter:latest .
-docker run -p 8080:8080 otter:latest
+# Build the optimized production image
+docker build -f docker/Dockerfile --target runner -t otter:latest .
+
+# Run with privileged flag for secure Bubblewrap sandboxing
+docker run -p 8080:8080 --privileged otter:latest
 ```
 
 ### Heroku
