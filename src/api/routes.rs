@@ -97,6 +97,49 @@ pub async fn rate_limit_middleware(
     next.run(req).await
 }
 
+pub async fn api_key_auth_middleware(
+    Extension(settings): Extension<Settings>,
+    req: Request<Body>,
+    next: Next,
+) -> Response {
+    if let Some(ref expected_key) = settings.otter_api_key {
+        let auth_header = req
+            .headers()
+            .get(axum::http::header::AUTHORIZATION)
+            .and_then(|h| h.to_str().ok());
+
+        let is_valid = if let Some(auth_str) = auth_header {
+            if auth_str.starts_with("Bearer ") {
+                let token = &auth_str[7..];
+                let token_bytes = token.as_bytes();
+                let expected_bytes = expected_key.as_bytes();
+                use subtle::ConstantTimeEq;
+                if token_bytes.len() == expected_bytes.len() {
+                    token_bytes.ct_eq(expected_bytes).unwrap_u8() == 1
+                } else {
+                    false
+                }
+            } else {
+                false
+            }
+        } else {
+            false
+        };
+
+        if !is_valid {
+            return (
+                StatusCode::UNAUTHORIZED,
+                Json(serde_json::json!({
+                    "error": "unauthorized",
+                    "message": "Invalid or missing API key in Authorization header"
+                }))
+            ).into_response();
+        }
+    }
+
+    next.run(req).await
+}
+
 pub fn build_router(settings: Settings) -> Router {
     let registry = Arc::new(LanguageRegistry::build());
     let store    = Arc::new(SubmissionStore::new());
@@ -110,13 +153,17 @@ pub fn build_router_with_components(
     store: Arc<SubmissionStore>,
     worker: Arc<Worker>,
 ) -> Router {
-    let mut router = Router::new()
-        .route("/health",             get(health::health))
+    let authenticated_routes = Router::new()
         .route("/languages",          get(languages::list_languages))
         .route("/submissions",        post(submissions::submit))
         .route("/submissions/:token", get(submissions::get_submission))
         .route("/submissions/batch",   post(submissions::submit_batch))
         .route("/metrics",             get(super::handlers::metrics::get_metrics))
+        .layer(middleware::from_fn(api_key_auth_middleware));
+
+    let mut router = Router::new()
+        .route("/health",             get(health::health))
+        .merge(authenticated_routes)
         .layer(Extension(registry))
         .layer(Extension(store))
         .layer(Extension(worker))

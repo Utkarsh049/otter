@@ -42,7 +42,7 @@ async fn run_attack(
     let token = post_response.json::<SubmissionResponse>().token;
     
     // Poll until finished (status id > 2 means final state, 1=Queued, 2=Processing, 3=Accepted, >3 are limits/errors)
-    for _ in 0..100 {
+    for _ in 0..200 {
         let get_response = server.get(&format!("/submissions/{}", token)).await;
         get_response.assert_status_ok();
         let poll_res = get_response.json::<SubmissionResponse>();

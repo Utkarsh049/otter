@@ -45,6 +45,7 @@ anyhow = "1"
 thiserror = "1"
 dashmap = "5"
 moka = { version = "0.12", features = ["sync"] }
+subtle = "2"
 dotenvy = "0.15"
 nix = { version = "0.29", features = ["resource", "signal", "user", "sched"] }
 libseccomp = "0.3"

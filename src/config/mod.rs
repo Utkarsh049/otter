@@ -15,6 +15,7 @@ pub struct Settings {
     pub redis_url: Option<String>,
     pub rate_limit_requests: Option<u64>,
     pub rate_limit_window_seconds: Option<u64>,
+    pub otter_api_key: Option<String>,
 }
 
 impl Default for Settings {
@@ -33,6 +34,7 @@ impl Default for Settings {
             redis_url: None,
             rate_limit_requests: None,
             rate_limit_window_seconds: None,
+            otter_api_key: None,
         }
     }
 }
@@ -94,6 +96,7 @@ impl Settings {
                 .and_then(|s| s.parse().ok()),
             rate_limit_window_seconds: std::env::var("RATE_LIMIT_WINDOW_SECONDS").ok()
                 .and_then(|s| s.parse().ok()),
+            otter_api_key: std::env::var("OTTER_API_KEY").ok(),
         })
     }
 }
