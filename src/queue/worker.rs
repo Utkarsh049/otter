@@ -28,6 +28,7 @@ pub struct Worker {
     max_queue_depth: usize,
     user_semaphores: Arc<DashMap<IpAddr, Arc<Semaphore>>>,
     max_concurrent_per_ip: usize,
+    slots: Arc<super::slot::SlotAllocator>,
 }
 
 impl Worker {
@@ -41,6 +42,7 @@ impl Worker {
             max_queue_depth: settings.max_queue_depth,
             user_semaphores: Arc::new(DashMap::new()),
             max_concurrent_per_ip: settings.max_concurrent_per_ip,
+            slots: Arc::new(super::slot::SlotAllocator::new(settings.max_concurrent)),
         }
     }
 
@@ -81,6 +83,8 @@ impl Worker {
         let token_log = token.clone();
         let queue_depth = self.queue_depth.clone();
         
+        let slots = self.slots.clone();
+        
         let ip_sem = self.user_semaphores
             .entry(ip)
             .or_insert_with(|| Arc::new(Semaphore::new(self.max_concurrent_per_ip)))
@@ -109,6 +113,29 @@ impl Worker {
                 }
             };
             
+            let slot_id = match slots.allocate() {
+                Some(id) => id,
+                None => {
+                    tracing::error!("No free execution slot available despite having permit");
+                    store.update_status(&token, StatusCode::internal_error());
+                    return;
+                }
+            };
+
+            struct SlotGuard {
+                slot_id: usize,
+                allocator: Arc<crate::queue::slot::SlotAllocator>,
+            }
+            impl Drop for SlotGuard {
+                fn drop(&mut self) {
+                    self.allocator.release(self.slot_id);
+                }
+            }
+            let _slot_guard = SlotGuard {
+                slot_id,
+                allocator: slots.clone(),
+            };
+
             store.update_status(&token, StatusCode::processing());
             
             let lang = match registry.get(&language_id) {
@@ -119,7 +146,10 @@ impl Worker {
                 }
             };
             
-            let exec_result = Engine::execute(lang, source_code, stdin, limits).await;
+            let mut limits_with_slot = limits;
+            limits_with_slot.slot_id = Some(slot_id);
+
+            let exec_result = Engine::execute(lang, source_code, stdin, limits_with_slot).await;
             
             match exec_result {
                 Ok(res) => {

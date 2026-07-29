@@ -99,6 +99,7 @@ async fn test_fork_bomb() {
     
     // C Fork bomb -> contained by RLIMIT_NPROC, finishes as RuntimeError/exit
     let res = run_attack(&server, "c", "tests/sandbox_attacks/programs/fork_bomb.c", None, None, None).await;
+    println!("DEBUG FORK BOMB: status={:?}, stdout={:?}, stderr={:?}, exit_code={:?}", res.status, res.stdout, res.stderr, res.exit_code);
     // Should be terminated/blocked and server remains completely responsive
     assert!(res.status.description == "Runtime Error" || res.status.description == "Time Limit Exceeded");
 }
