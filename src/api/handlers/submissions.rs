@@ -59,6 +59,7 @@ pub async fn submit(
         memory_mb: req.memory_limit_mb.unwrap_or(settings.memory_limit_mb),
         max_output_bytes: settings.max_output_bytes,
         max_processes: lang.default_limits().max_processes,
+        disable_sandbox: settings.disable_sandbox,
     };
     
     let ip = get_client_ip(&headers, connect_info);
@@ -132,6 +133,7 @@ pub async fn submit_batch(
             memory_mb: req.memory_limit_mb.unwrap_or(settings.memory_limit_mb),
             max_output_bytes: settings.max_output_bytes,
             max_processes: lang.default_limits().max_processes,
+            disable_sandbox: settings.disable_sandbox,
         };
         
         worker.enqueue(

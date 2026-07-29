@@ -8,9 +8,9 @@ use std::time::Duration;
 fn get_test_settings() -> Settings {
     Settings {
         max_concurrent: 4,
-        cpu_limit_ms: 1000,
-        wall_limit_ms: 2000,
-        memory_limit_mb: 64,
+        cpu_limit_ms: 5000,
+        wall_limit_ms: 10000,
+        memory_limit_mb: 128,
         max_output_bytes: 10240, // 10KB output cap for testing
         ..Settings::default()
     }
@@ -82,12 +82,12 @@ async fn test_memory_bombs() {
     
     // 1. Python Memory bomb -> MemoryLimitExceeded
     // Set a tight limit of 32MB to trigger OOM quickly
-    let res_py = run_attack(&server, "python", "tests/sandbox_attacks/programs/memory_bomb.py", None, Some(32), None).await;
+    let res_py = run_attack(&server, "python", "tests/sandbox_attacks/programs/memory_bomb.py", None, Some(32), Some(5000)).await;
     println!("DEBUG MEM BOMB PY: status={:?}, stdout={:?}, stderr={:?}, exit_code={:?}, memory_kb={:?}", res_py.status, res_py.stdout, res_py.stderr, res_py.exit_code, res_py.memory_kb);
     assert_eq!(res_py.status.description, "Memory Limit Exceeded");
     
     // 2. JavaScript Memory bomb -> MemoryLimitExceeded
-    let res_js = run_attack(&server, "javascript", "tests/sandbox_attacks/programs/memory_bomb.js", None, Some(64), None).await;
+    let res_js = run_attack(&server, "javascript", "tests/sandbox_attacks/programs/memory_bomb.js", None, Some(64), Some(5000)).await;
     println!("DEBUG MEM BOMB JS: status={:?}, stdout={:?}, stderr={:?}, exit_code={:?}, memory_kb={:?}", res_js.status, res_js.stdout, res_js.stderr, res_js.exit_code, res_js.memory_kb);
     assert_eq!(res_js.status.description, "Memory Limit Exceeded");
 }

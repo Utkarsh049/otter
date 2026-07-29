@@ -1,0 +1,16 @@
+services:
+  api:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+      target: runner
+      network: host
+    ports:
+      - "8080:8080"
+    environment:
+      - APP_ENV=production
+      - LOG_FORMAT=json
+      - MAX_CONCURRENT=8
+      - HOST=0.0.0.0
+      - PORT=8080
+    restart: unless-stopped

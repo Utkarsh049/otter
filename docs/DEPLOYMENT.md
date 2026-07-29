@@ -17,6 +17,7 @@ Create a `.env` file in the root of the project to manage environment variables:
 | `WALL_LIMIT_MS` | Default wall-clock execution time limit per job | `10000` |
 | `MEMORY_LIMIT_MB` | Default memory limit per job | `128` |
 | `MAX_OUTPUT_BYTES` | Cap on stdout/stderr output truncation (in bytes) | `1048576` (1MB) |
+| `DISABLE_SANDBOX` | Force raw fallback execution without Bubblewrap | `false` (Auto-detected) |
 | `REDIS_URL` | Connection URL for Redis data persistence (V2) | None (Disabled) |
 | `APP_ENV` | Mode of the application (e.g. `production`) | `development` |
 | `LOG_FORMAT` | Format of tracing outputs (e.g. `json`) | `text` |
@@ -29,21 +30,31 @@ Create a `.env` file in the root of the project to manage environment variables:
 ---
 
 ## 2. Local Docker Deployment
-To run the server in a local containerized environment:
+To run the server or execute tests in a local containerized environment:
 
-### Build the Docker Image
+### Build the Production Image
+To build the optimized, lightweight production image (the `runner` stage):
 ```bash
-docker build -f docker/Dockerfile -t otter:latest .
+docker build -f docker/Dockerfile --target runner -t otter:latest .
 ```
 
 ### Run the Container
+To run the production container with secure sandboxing:
 ```bash
-docker run -p 8080:8080 \
+docker run -p 8080:8080 --privileged \
   -e MAX_CONCURRENT=4 \
   -e LOG_FORMAT=json \
   -e RATE_LIMIT_REQUESTS=100 \
   -e RATE_LIMIT_WINDOW_SECONDS=60 \
   otter:latest
+```
+> [!IMPORTANT]
+> **Why `--privileged`**: The secure sandbox uses `bubblewrap` to jail user code. Inside Docker, bubblewrap requires `SYS_ADMIN` capability (granted by `--privileged`) to create namespaces and mounts. If run without `--privileged`, Otter automatically detects the restriction and falls back to **un-jailed raw execution mode** (applying standard Linux resource limits but without folder/network virtualization).
+
+### Run Tests in the Container (Isolated Test Suite)
+We define a separate `tester` stage in the Dockerfile that includes the full Rust toolchain and compilers. You can run the entire test suite inside an isolated container with a single command:
+```bash
+docker compose -f docker-compose.test.yml up --build --exit-code-from test-runner
 ```
 
 ---
@@ -157,4 +168,13 @@ If it returns `0`, you can temporarily enable it by running:
 sudo sysctl -w kernel.unprivileged_userns_clone=1
 ```
 To persist this setting, add `kernel.unprivileged_userns_clone=1` to `/etc/sysctl.conf`.
+
+### Automatic Fallback on Restricted Platforms (e.g., Heroku, Render)
+On shared container hosting platforms (such as Heroku or some Render plans) where `CLONE_NEWUSER` (unprivileged namespaces) is blocked at the hypervisor level, bubblewrap will fail to initialize. 
+
+Otter automatically detects namespace support at startup:
+* If namespaces are unsupported, Otter **gracefully falls back to un-jailed raw mode** (executing processes directly on the host rather than inside `bwrap`).
+* Even in raw fallback mode, Otter **still enforces all process limits** (`RLIMIT_CPU`, `RLIMIT_AS`, `RLIMIT_NPROC`, `RLIMIT_FSIZE`, `RLIMIT_NOFILE`, and low CPU priority) using standard Unix system calls, protecting the host system from resource exhaustion.
+* You can also explicitly force raw fallback mode by setting the environment variable:
+  `DISABLE_SANDBOX=true`
 

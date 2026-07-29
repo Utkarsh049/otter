@@ -1,0 +1,10 @@
+services:
+  test-runner:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+      target: tester
+      network: host
+    privileged: true
+    environment:
+      - RUST_LOG=info

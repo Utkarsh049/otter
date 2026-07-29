@@ -30,7 +30,7 @@ impl Engine {
         limits: Limits,
     ) -> Result<ExecutionResult> {
         let job_id = uuid::Uuid::new_v4().to_string();
-        let work_dir = std::path::PathBuf::from("/dev/shm").join(format!("otter-{}", job_id));
+        let work_dir = std::path::PathBuf::from("/tmp").join(format!("otter-{}", job_id));
         
         tokio::fs::create_dir_all(&work_dir).await?;
         
@@ -85,79 +85,88 @@ impl Engine {
         let max_processes = ctx.limits.max_processes;
         let max_output_bytes = ctx.limits.max_output_bytes;
 
-        // Compile seccomp filter to a BPF file in the work_dir
-        let filter_path = ctx.work_dir.join("filter.bpf");
-        {
-            let mut filter_file = std::fs::File::create(&filter_path)?;
+        let disable_sandbox = ctx.limits.disable_sandbox;
+        let mut seccomp_fd: Option<RawFd> = None;
+        let mut _seccomp_guard: Option<FdGuard> = None;
 
-            let mut filter = libseccomp::ScmpFilterContext::new_filter(libseccomp::ScmpAction::KillProcess)?;
-            filter.add_arch(libseccomp::ScmpArch::Native)?;
+        if !disable_sandbox {
+            // Compile seccomp filter to a BPF file in the work_dir
+            let filter_path = ctx.work_dir.join("filter.bpf");
+            {
+                let mut filter_file = std::fs::File::create(&filter_path)?;
 
-            let syscalls: &[&str] = match language_id {
-                "c" | "cpp" => &[
-                    "read", "write", "open", "openat", "close", "fstat", "stat", "lstat",
-                    "lseek", "mmap", "mprotect", "munmap", "mremap", "brk", "rt_sigaction", "rt_sigprocmask",
-                    "rt_sigreturn", "ioctl", "access", "select", "poll", "madvise",
-                    "getuid", "getgid", "geteuid", "getegid", "exit", "exit_group", "arch_prctl",
-                    "futex", "set_tid_address", "set_robust_list", "clock_gettime",
-                    "nanosleep", "getcwd", "statx", "newfstatat", "writev", "readv", "execve",
-                    "pread64", "pwrite64", "fcntl", "dup", "dup2", "dup3", "getrandom", "sysinfo",
-                    "uname", "prlimit64", "getpid", "getppid", "gettid", "sigaltstack", "readlink", "rseq", "prctl",
-                    "socket", "connect", "sendto", "recvfrom", "sendmsg", "recvmsg",
-                    "setsockopt", "getsockopt", "getsockname", "getpeername", "bind", "listen", "accept", "accept4", "socketpair",
-                    "sched_getparam", "sched_setparam", "sched_getscheduler", "sched_setscheduler", "sched_get_priority_max", "sched_get_priority_min",
-                    "clock_nanosleep"
-                ],
-                "python" => &[
-                    "read", "write", "open", "openat", "close", "fstat", "stat", "lstat",
-                    "lseek", "mmap", "mprotect", "munmap", "mremap", "brk", "rt_sigaction", "rt_sigprocmask",
-                    "rt_sigreturn", "ioctl", "access", "select", "poll", "madvise",
-                    "getuid", "getgid", "geteuid", "getegid", "exit", "exit_group", "arch_prctl",
-                    "futex", "set_tid_address", "set_robust_list", "clock_gettime",
-                    "nanosleep", "getcwd", "statx", "newfstatat", "writev", "readv",
-                    "readlink", "getdents", "getdents64", "fcntl", "dup", "dup2", "dup3",
-                    "sysinfo", "getrandom", "uname", "prlimit64", "getpid", "getppid", "gettid",
-                    "umask", "sigaltstack", "sched_getaffinity", "sched_yield", "clone", "clone3", "execve",
-                    "pread64", "pwrite64", "rseq", "prctl",
-                    "socket", "connect", "sendto", "recvfrom", "sendmsg", "recvmsg",
-                    "setsockopt", "getsockopt", "getsockname", "getpeername", "bind", "listen", "accept", "accept4", "socketpair",
-                    "sched_getparam", "sched_setparam", "sched_getscheduler", "sched_setscheduler", "sched_get_priority_max", "sched_get_priority_min",
-                    "clock_nanosleep"
-                ],
-                "javascript" => &[
-                    "read", "write", "open", "openat", "close", "fstat", "stat", "lstat",
-                    "lseek", "mmap", "mprotect", "munmap", "mremap", "brk", "rt_sigaction", "rt_sigprocmask",
-                    "rt_sigreturn", "ioctl", "access", "select", "poll", "madvise",
-                    "getuid", "getgid", "geteuid", "getegid", "exit", "exit_group", "arch_prctl",
-                    "futex", "set_tid_address", "set_robust_list", "clock_gettime",
-                    "nanosleep", "getcwd", "statx", "newfstatat", "writev", "readv",
-                    "readlink", "getdents", "getdents64", "fcntl", "dup", "dup2", "dup3",
-                    "sysinfo", "getrandom", "uname", "prlimit64", "getpid", "getppid", "gettid",
-                    "umask", "sigaltstack", "sched_getaffinity", "sched_yield", "clone", "clone3",
-                    "epoll_create1", "epoll_ctl", "epoll_wait", "eventfd2", "timerfd_create",
-                    "timerfd_settime", "pipe", "pipe2", "socketpair", "shutdown", "execve",
-                    "pread64", "pwrite64", "rseq", "capget", "prctl", "io_uring_setup",
-                    "io_uring_enter", "io_uring_register", "epoll_pwait",
-                    "socket", "connect", "sendto", "recvfrom", "sendmsg", "recvmsg",
-                    "setsockopt", "getsockopt", "getsockname", "getpeername", "bind", "listen", "accept", "accept4",
-                    "sched_getparam", "sched_setparam", "sched_getscheduler", "sched_setscheduler", "sched_get_priority_max", "sched_get_priority_min",
-                    "clock_nanosleep"
-                ],
-                _ => &[]
-            };
+                let mut filter = libseccomp::ScmpFilterContext::new_filter(libseccomp::ScmpAction::KillProcess)?;
+                filter.add_arch(libseccomp::ScmpArch::Native)?;
 
-            for syscall_name in syscalls {
-                if let Ok(syscall) = libseccomp::ScmpSyscall::from_name(syscall_name) {
-                    let _ = filter.add_rule(libseccomp::ScmpAction::Allow, syscall);
+                let syscalls: &[&str] = match language_id {
+                    "c" | "cpp" => &[
+                        "read", "write", "open", "openat", "close", "fstat", "stat", "lstat",
+                        "lseek", "mmap", "mprotect", "munmap", "mremap", "brk", "rt_sigaction", "rt_sigprocmask",
+                        "rt_sigreturn", "ioctl", "access", "select", "poll", "madvise",
+                        "getuid", "getgid", "geteuid", "getegid", "exit", "exit_group", "arch_prctl",
+                        "futex", "set_tid_address", "set_robust_list", "clock_gettime",
+                        "nanosleep", "getcwd", "statx", "newfstatat", "writev", "readv", "execve",
+                        "pread64", "pwrite64", "fcntl", "dup", "dup2", "dup3", "getrandom", "sysinfo",
+                        "uname", "prlimit64", "getpid", "getppid", "gettid", "sigaltstack", "readlink", "rseq", "prctl",
+                        "socket", "connect", "sendto", "recvfrom", "sendmsg", "recvmsg",
+                        "setsockopt", "getsockopt", "getsockname", "getpeername", "bind", "listen", "accept", "accept4", "socketpair",
+                        "sched_getparam", "sched_setparam", "sched_getscheduler", "sched_setscheduler", "sched_get_priority_max", "sched_get_priority_min",
+                        "clock_nanosleep", "faccessat", "faccessat2", "pkey_alloc", "pkey_free", "pkey_mprotect", "readlinkat", "statfs", "signalfd4",
+                        "epoll_create1", "epoll_ctl", "epoll_wait", "epoll_pwait", "epoll_pwait2"
+                    ],
+                    "python" => &[
+                        "read", "write", "open", "openat", "close", "fstat", "stat", "lstat",
+                        "lseek", "mmap", "mprotect", "munmap", "mremap", "brk", "rt_sigaction", "rt_sigprocmask",
+                        "rt_sigreturn", "ioctl", "access", "select", "poll", "madvise",
+                        "getuid", "getgid", "geteuid", "getegid", "exit", "exit_group", "arch_prctl",
+                        "futex", "set_tid_address", "set_robust_list", "clock_gettime",
+                        "nanosleep", "getcwd", "statx", "newfstatat", "writev", "readv",
+                        "readlink", "getdents", "getdents64", "fcntl", "dup", "dup2", "dup3",
+                        "sysinfo", "getrandom", "uname", "prlimit64", "getpid", "getppid", "gettid",
+                        "umask", "sigaltstack", "sched_getaffinity", "sched_yield", "clone", "clone3", "execve",
+                        "pread64", "pwrite64", "rseq", "prctl",
+                        "socket", "connect", "sendto", "recvfrom", "sendmsg", "recvmsg",
+                        "setsockopt", "getsockopt", "getsockname", "getpeername", "bind", "listen", "accept", "accept4", "socketpair",
+                        "sched_getparam", "sched_setparam", "sched_getscheduler", "sched_setscheduler", "sched_get_priority_max", "sched_get_priority_min",
+                        "clock_nanosleep", "faccessat", "faccessat2", "pkey_alloc", "pkey_free", "pkey_mprotect", "readlinkat", "statfs", "signalfd4",
+                        "epoll_create1", "epoll_ctl", "epoll_wait", "epoll_pwait", "epoll_pwait2"
+                    ],
+                    "javascript" => &[
+                        "read", "write", "open", "openat", "close", "fstat", "stat", "lstat",
+                        "lseek", "mmap", "mprotect", "munmap", "mremap", "brk", "rt_sigaction", "rt_sigprocmask",
+                        "rt_sigreturn", "ioctl", "access", "select", "poll", "madvise",
+                        "getuid", "getgid", "geteuid", "getegid", "exit", "exit_group", "arch_prctl",
+                        "futex", "set_tid_address", "set_robust_list", "clock_gettime",
+                        "nanosleep", "getcwd", "statx", "newfstatat", "writev", "readv",
+                        "readlink", "getdents", "getdents64", "fcntl", "dup", "dup2", "dup3",
+                        "sysinfo", "getrandom", "uname", "prlimit64", "getpid", "getppid", "gettid",
+                        "umask", "sigaltstack", "sched_getaffinity", "sched_yield", "clone", "clone3",
+                        "epoll_create1", "epoll_ctl", "epoll_wait", "eventfd2", "timerfd_create",
+                        "timerfd_settime", "pipe", "pipe2", "socketpair", "shutdown", "execve",
+                        "pread64", "pwrite64", "rseq", "capget", "prctl", "io_uring_setup",
+                        "io_uring_enter", "io_uring_register", "epoll_pwait", "epoll_pwait2",
+                        "socket", "connect", "sendto", "recvfrom", "sendmsg", "recvmsg",
+                        "setsockopt", "getsockopt", "getsockname", "getpeername", "bind", "listen", "accept", "accept4",
+                        "sched_getparam", "sched_setparam", "sched_getscheduler", "sched_setscheduler", "sched_get_priority_max", "sched_get_priority_min",
+                        "clock_nanosleep", "faccessat", "faccessat2", "pkey_alloc", "pkey_free", "pkey_mprotect", "readlinkat", "statfs", "signalfd4"
+                    ],
+                    _ => &[]
+                };
+
+                for syscall_name in syscalls {
+                    if let Ok(syscall) = libseccomp::ScmpSyscall::from_name(syscall_name) {
+                        let _ = filter.add_rule(libseccomp::ScmpAction::Allow, syscall);
+                    }
                 }
+
+                filter.export_bpf(&mut filter_file)?;
             }
 
-            filter.export_bpf(&mut filter_file)?;
+            let read_file = std::fs::File::open(&filter_path)?;
+            let fd = read_file.into_raw_fd();
+            seccomp_fd = Some(fd);
+            _seccomp_guard = Some(FdGuard(fd));
         }
-
-        let read_file = std::fs::File::open(&filter_path)?;
-        let seccomp_fd = read_file.into_raw_fd();
-        let _seccomp_guard = FdGuard(seccomp_fd);
 
         // Resolve the program path
         let resolved = if program.starts_with("/") || program.starts_with("./") {
@@ -189,43 +198,51 @@ impl Engine {
         let pid_write_raw = pid_fds[1];
         let pid_write_guard = FdGuard(pid_write_raw);
 
-        // Construct bubblewrap arguments
-        let mut bwrap_args = vec![
-            "--unshare-user".to_string(),
-            "--unshare-net".to_string(),
-            "--die-with-parent".to_string(),
-            "--ro-bind".to_string(), "/usr".to_string(), "/usr".to_string(),
-            "--symlink".to_string(), "usr/bin".to_string(), "/bin".to_string(),
-            "--symlink".to_string(), "usr/lib".to_string(), "/lib".to_string(),
-            "--symlink".to_string(), "usr/lib64".to_string(), "/lib64".to_string(),
-            "--symlink".to_string(), "usr/sbin".to_string(), "/sbin".to_string(),
-            "--proc".to_string(), "/proc".to_string(),
-            "--dev".to_string(), "/dev".to_string(),
-            "--tmpfs".to_string(), "/tmp".to_string(),
-            "--bind".to_string(), ctx.work_dir.to_string_lossy().into_owned(), "/workspace".to_string(),
-            "--chdir".to_string(), "/workspace".to_string(),
-            "--seccomp".to_string(), seccomp_fd.to_string(),
-            "--info-fd".to_string(), pid_write_raw.to_string(),
-        ];
+        let mut cmd = if disable_sandbox {
+            let mut c = Command::new(&resolved);
+            c.args(args);
+            c
+        } else {
+            // Construct bubblewrap arguments
+            let mut bwrap_args = vec![
+                "--unshare-user".to_string(),
+                "--unshare-net".to_string(),
+                "--die-with-parent".to_string(),
+                "--ro-bind".to_string(), "/usr".to_string(), "/usr".to_string(),
+                "--symlink".to_string(), "usr/bin".to_string(), "/bin".to_string(),
+                "--symlink".to_string(), "usr/lib".to_string(), "/lib".to_string(),
+                "--symlink".to_string(), "usr/lib64".to_string(), "/lib64".to_string(),
+                "--symlink".to_string(), "usr/sbin".to_string(), "/sbin".to_string(),
+                "--proc".to_string(), "/proc".to_string(),
+                "--dev".to_string(), "/dev".to_string(),
+                "--tmpfs".to_string(), "/tmp".to_string(),
+                "--bind".to_string(), ctx.work_dir.to_string_lossy().into_owned(), "/workspace".to_string(),
+                "--chdir".to_string(), "/workspace".to_string(),
+                "--seccomp".to_string(), seccomp_fd.unwrap().to_string(),
+                "--info-fd".to_string(), pid_write_raw.to_string(),
+            ];
 
-        // Bind node runtime's parent directory dynamically if it is in home/nvm
-        if resolved.is_absolute() && !resolved.starts_with("/usr") {
-            if let Some(parent) = resolved.parent() {
-                bwrap_args.push("--ro-bind".to_string());
-                bwrap_args.push(parent.to_string_lossy().into_owned());
-                bwrap_args.push(parent.to_string_lossy().into_owned());
+            // Bind node runtime's parent directory dynamically if it is in home/nvm
+            if resolved.is_absolute() && !resolved.starts_with("/usr") {
+                if let Some(parent) = resolved.parent() {
+                    bwrap_args.push("--ro-bind".to_string());
+                    bwrap_args.push(parent.to_string_lossy().into_owned());
+                    bwrap_args.push(parent.to_string_lossy().into_owned());
+                }
             }
-        }
 
-        bwrap_args.push("--".to_string());
-        bwrap_args.push(resolved.to_string_lossy().into_owned());
-        for arg in args {
-            bwrap_args.push(arg.to_string());
-        }
+            bwrap_args.push("--".to_string());
+            bwrap_args.push(resolved.to_string_lossy().into_owned());
+            for arg in args {
+                bwrap_args.push(arg.to_string());
+            }
 
-        let mut cmd = Command::new("bwrap");
-        cmd.args(&bwrap_args)
-            .current_dir(&ctx.work_dir)
+            let mut c = Command::new("bwrap");
+            c.args(&bwrap_args);
+            c
+        };
+
+        cmd.current_dir(&ctx.work_dir)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -238,14 +255,20 @@ impl Engine {
 
         unsafe {
             cmd.pre_exec(move || {
-                let res = nix::libc::fcntl(seccomp_fd, nix::libc::F_SETFD, 0);
-                if res == -1 {
-                    return Err(std::io::Error::last_os_error());
-                }
+                if let Some(fd) = seccomp_fd {
+                    let res = nix::libc::fcntl(fd, nix::libc::F_SETFD, 0);
+                    if res == -1 {
+                        return Err(std::io::Error::last_os_error());
+                    }
 
-                let res_pid = nix::libc::fcntl(pid_write_raw, nix::libc::F_SETFD, 0);
-                if res_pid == -1 {
-                    return Err(std::io::Error::last_os_error());
+                    let res_pid = nix::libc::fcntl(pid_write_raw, nix::libc::F_SETFD, 0);
+                    if res_pid == -1 {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                } else {
+                    let my_pid = std::process::id();
+                    let msg = format!("{{\"child-pid\": {}}}", my_pid);
+                    let _ = nix::libc::write(pid_write_raw, msg.as_ptr() as *const nix::libc::c_void, msg.len());
                 }
 
                 let cpu_secs = (cpu_time_ms + 999) / 1000;
@@ -420,7 +443,8 @@ impl Engine {
         // Map limit conditions
         let is_mle = peak_memory_kb >= ctx.limits.memory_mb * 1024
             || exit_code == 134 // V8 abort
-            || (status == ExecutionStatus::RuntimeError && peak_memory_kb >= ctx.limits.memory_mb * 1024 * 85 / 100);
+            || (status == ExecutionStatus::RuntimeError && peak_memory_kb >= ctx.limits.memory_mb * 1024 * 85 / 100)
+            || stderr.contains("MemoryError");
 
         let is_tle = status == ExecutionStatus::TimeLimitExceeded
             || exit_code == 128 + 24 // SIGXCPU

@@ -1,0 +1,12 @@
+target/
+.git/
+.env
+.gitignore
+README.md
+docs/
+report.md
+TIMELINE.md
+PROJECT.md
+walkthrough.md
+task.md
+implementation_plan.md

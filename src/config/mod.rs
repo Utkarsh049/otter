@@ -11,6 +11,7 @@ pub struct Settings {
     pub max_output_bytes: usize,
     pub max_queue_depth: usize,
     pub max_concurrent_per_ip: usize,
+    pub disable_sandbox: bool,
     pub redis_url: Option<String>,
     pub rate_limit_requests: Option<u64>,
     pub rate_limit_window_seconds: Option<u64>,
@@ -28,6 +29,7 @@ impl Default for Settings {
             max_output_bytes: 1048576,
             max_queue_depth: 100,
             max_concurrent_per_ip: 2,
+            disable_sandbox: false,
             redis_url: None,
             rate_limit_requests: None,
             rate_limit_window_seconds: None,
@@ -71,6 +73,22 @@ impl Settings {
                 .unwrap_or("2".into())
                 .parse()
                 .context("MAX_CONCURRENT_PER_IP must be a number")?,
+            disable_sandbox: {
+                let disabled = if let Ok(val) = std::env::var("DISABLE_SANDBOX") {
+                    val.parse().unwrap_or(false)
+                } else {
+                    let sandbox_supported = std::process::Command::new("bwrap")
+                        .args(&["--unshare-user", "--ro-bind", "/", "/", "--", "true"])
+                        .status()
+                        .map(|s| s.success())
+                        .unwrap_or(false);
+                    !sandbox_supported
+                };
+                if disabled {
+                    tracing::warn!("Unprivileged user namespaces are not supported by the host. Running in un-jailed fallback mode.");
+                }
+                disabled
+            },
             redis_url: std::env::var("REDIS_URL").ok(),
             rate_limit_requests: std::env::var("RATE_LIMIT_REQUESTS").ok()
                 .and_then(|s| s.parse().ok()),

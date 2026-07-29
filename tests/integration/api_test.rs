@@ -78,7 +78,7 @@ async fn test_submit_and_poll_happy_path() {
             finished = true;
             break;
         } else if poll_res.status.id > 3 {
-            panic!("Unexpected failed status: {:?}", poll_res.status);
+            panic!("Unexpected failed status: {:?}, stdout: {:?}, stderr: {:?}, exit_code: {:?}", poll_res.status, poll_res.stdout, poll_res.stderr, poll_res.exit_code);
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
@@ -163,6 +163,8 @@ async fn test_metrics_endpoint() {
         if poll_res.status.id == 3 {
             finished = true;
             break;
+        } else if poll_res.status.id > 3 {
+            panic!("Metrics test job failed with status: {:?}, stdout: {:?}, stderr: {:?}, exit_code: {:?}", poll_res.status, poll_res.stdout, poll_res.stderr, poll_res.exit_code);
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
@@ -271,10 +273,12 @@ async fn test_batch_submissions() {
             assert_eq!(poll.stdout.unwrap(), "batch 2\n");
             finished2 = true;
             break;
+        } else if poll.status.id > 3 {
+            panic!("Batch 2 failed with status: {:?}, stdout: {:?}, stderr: {:?}, exit_code: {:?}", poll.status, poll.stdout, poll.stderr, poll.exit_code);
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
-    assert!(finished2);
+    assert!(finished2, "Batch 2 did not finish");
 }
 
 #[tokio::test]
@@ -351,4 +355,41 @@ async fn test_queue_capacity_limit() {
     response3.assert_status(axum::http::StatusCode::TOO_MANY_REQUESTS);
     let body = response3.json::<serde_json::Value>();
     assert!(body["error"].as_str().unwrap().contains("server is at capacity"));
+}
+
+#[tokio::test]
+async fn test_disable_sandbox_mode() {
+    let mut settings = get_test_settings();
+    settings.disable_sandbox = true; // explicitly disable sandbox
+
+    let app = build_router(settings);
+    let server = TestServer::new(app).unwrap();
+
+    let request_payload = SubmissionRequest {
+        language: "python".to_string(),
+        source_code: "print('running un-jailed raw mode!')".to_string(),
+        stdin: "".to_string(),
+        cpu_time_limit_ms: None,
+        memory_limit_mb: None,
+        wall_time_limit_ms: None,
+    };
+
+    let response = server.post("/submissions").json(&request_payload).await;
+    response.assert_status(axum::http::StatusCode::CREATED);
+    let token = response.json::<SubmissionResponse>().token;
+
+    // Poll until Accepted
+    let mut finished = false;
+    for _ in 0..100 {
+        let get_response = server.get(&format!("/submissions/{}", token)).await;
+        get_response.assert_status_ok();
+        let poll_res = get_response.json::<SubmissionResponse>();
+        if poll_res.status.id == 3 { // Accepted
+            assert_eq!(poll_res.stdout.unwrap(), "running un-jailed raw mode!\n");
+            finished = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(finished, "Un-jailed execution did not complete");
 }
