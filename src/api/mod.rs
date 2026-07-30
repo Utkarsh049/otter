@@ -15,7 +15,7 @@ use crate::queue::worker::Worker;
 
 pub async fn serve(settings: Settings) -> Result<()> {
     let registry = Arc::new(LanguageRegistry::build());
-    let store    = Arc::new(SubmissionStore::new());
+    let store    = Arc::new(SubmissionStore::new(settings.redis_url.clone()));
     let worker   = Arc::new(Worker::new(&settings, store.clone(), registry.clone()));
     let worker_shutdown = worker.clone();
 
