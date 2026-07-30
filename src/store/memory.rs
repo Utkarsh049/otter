@@ -224,6 +224,31 @@ impl SubmissionStore {
         }
     }
 
+    pub fn get_all(&self) -> Vec<SubmissionResponse> {
+        match &self.inner {
+            SubmissionStoreInner::Memory { cache, .. } => {
+                cache.iter().map(|(_, val)| val).collect()
+            }
+            SubmissionStoreInner::Redis { .. } => {
+                if let Some(mut conn) = self.get_redis_conn() {
+                    use redis::Commands;
+                    let keys: Vec<String> = conn.keys("submission:*").unwrap_or_default();
+                    let mut submissions = Vec::new();
+                    for key in keys {
+                        if let Ok(Some(json_str)) = conn.get::<_, Option<String>>(&key) {
+                            if let Ok(response) = serde_json::from_str::<SubmissionResponse>(&json_str) {
+                                submissions.push(response);
+                            }
+                        }
+                    }
+                    submissions
+                } else {
+                    Vec::new()
+                }
+            }
+        }
+    }
+
     pub fn get_metrics(&self) -> (usize, f64, f64) {
         match &self.inner {
             SubmissionStoreInner::Memory { completed_count, error_count, total_latency_ms, .. } => {

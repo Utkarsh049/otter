@@ -172,7 +172,7 @@ pub fn build_router_with_components(
     let mut router = Router::new()
         .route("/health",             get(health::health))
         .route("/languages",          get(languages::list_languages))
-        .route("/submissions",        post(submissions::submit))
+        .route("/submissions",        get(submissions::list_submissions).post(submissions::submit))
         .route("/submissions/:token", get(submissions::get_submission))
         .route("/submissions/batch",   post(submissions::submit_batch))
         .route("/metrics",             get(super::handlers::metrics::get_metrics));

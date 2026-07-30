@@ -499,3 +499,44 @@ async fn test_api_key_rate_limiting() {
         .await;
     response.assert_status(axum::http::StatusCode::CREATED);
 }
+
+#[tokio::test]
+async fn test_list_submissions() {
+    let app = build_router(get_test_settings());
+    let server = TestServer::new(app).unwrap();
+
+    // 1. Submit two jobs
+    let payload1 = SubmissionRequest {
+        language: "python".to_string(),
+        source_code: "print('job 1')".to_string(),
+        stdin: "".to_string(),
+        cpu_time_limit_ms: None,
+        memory_limit_mb: None,
+        wall_time_limit_ms: None,
+    };
+    let response1 = server.post("/submissions").json(&payload1).await;
+    response1.assert_status(axum::http::StatusCode::CREATED);
+    let token1 = response1.json::<SubmissionResponse>().token;
+
+    let payload2 = SubmissionRequest {
+        language: "python".to_string(),
+        source_code: "print('job 2')".to_string(),
+        stdin: "".to_string(),
+        cpu_time_limit_ms: None,
+        memory_limit_mb: None,
+        wall_time_limit_ms: None,
+    };
+    let response2 = server.post("/submissions").json(&payload2).await;
+    response2.assert_status(axum::http::StatusCode::CREATED);
+    let token2 = response2.json::<SubmissionResponse>().token;
+
+    // 2. Query list submissions
+    let response = server.get("/submissions").await;
+    response.assert_status_ok();
+    let list = response.json::<Vec<SubmissionResponse>>();
+
+    // Verify both submissions exist in the list
+    let tokens: Vec<String> = list.iter().map(|s| s.token.clone()).collect();
+    assert!(tokens.contains(&token1));
+    assert!(tokens.contains(&token2));
+}

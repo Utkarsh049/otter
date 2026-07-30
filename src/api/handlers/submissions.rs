@@ -175,3 +175,9 @@ pub async fn get_submission(
             format!("submission '{}' not found", token)
         ))
 }
+
+pub async fn list_submissions(
+    Extension(store): Extension<Arc<SubmissionStore>>,
+) -> Result<Json<Vec<SubmissionResponse>>, ApiError> {
+    Ok(Json(store.get_all()))
+}

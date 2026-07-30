@@ -126,6 +126,38 @@ curl -X POST http://localhost:8080/submissions \
 
 ---
 
+## 3b. List Submissions History
+Returns a list of all active or recently executed submissions stored in the system.
+
+* **URL**: `/submissions`
+* **Method**: `GET`
+* **Response Status**: `200 OK`
+* **Response Body**:
+```json
+[
+  {
+    "token": "79b32e60-84cf-4d92-8086-5386db49f9be",
+    "status": {
+      "id": 3,
+      "description": "Accepted"
+    },
+    "stdout": "Hello Otter!\n",
+    "stderr": "",
+    "compile_output": "",
+    "time_ms": 52,
+    "memory_kb": 8120,
+    "exit_code": 0
+  }
+]
+```
+
+* **Example Request**:
+```bash
+curl -X GET http://localhost:8080/submissions
+```
+
+---
+
 ## 4. Get Submission Results
 Query the status or execution results of a submission using its token.
 
