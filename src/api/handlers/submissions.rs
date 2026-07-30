@@ -60,6 +60,7 @@ pub async fn submit(
         max_output_bytes: settings.max_output_bytes,
         max_processes: lang.default_limits().max_processes,
         disable_sandbox: settings.disable_sandbox,
+        slot_id: None,
     };
     
     let ip = get_client_ip(&headers, connect_info);
@@ -134,6 +135,7 @@ pub async fn submit_batch(
             max_output_bytes: settings.max_output_bytes,
             max_processes: lang.default_limits().max_processes,
             disable_sandbox: settings.disable_sandbox,
+            slot_id: None,
         };
         
         worker.enqueue(

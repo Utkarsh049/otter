@@ -1,11 +1,11 @@
-use dashmap::DashMap;
+use moka::sync::Cache;
 use std::sync::atomic::{AtomicUsize, AtomicU64, Ordering};
 use crate::api::models::response::SubmissionResponse;
 use crate::api::models::status::StatusCode;
 use crate::execution::result::{ExecutionResult, ExecutionStatus};
 
 pub struct SubmissionStore {
-    inner: DashMap<String, SubmissionResponse>,
+    inner: Cache<String, SubmissionResponse>,
     completed_count: AtomicUsize,
     error_count: AtomicUsize,
     total_latency_ms: AtomicU64,
@@ -14,7 +14,10 @@ pub struct SubmissionStore {
 impl SubmissionStore {
     pub fn new() -> Self {
         Self {
-            inner: DashMap::new(),
+            inner: Cache::builder()
+                .max_capacity(10_000)
+                .time_to_live(std::time::Duration::from_secs(1800)) // 30 minutes
+                .build(),
             completed_count: AtomicUsize::new(0),
             error_count: AtomicUsize::new(0),
             total_latency_ms: AtomicU64::new(0),
@@ -35,10 +38,12 @@ impl SubmissionStore {
     }
 
     pub fn update_status(&self, token: &str, status: StatusCode) {
-        if let Some(mut entry) = self.inner.get_mut(token) {
+        if let Some(mut entry) = self.inner.get(token) {
             let old_id = entry.status.id;
             let new_id = status.id;
             entry.status = status;
+            
+            self.inner.insert(token.to_string(), entry);
             
             // Check transition from active (1 or 2) to completed (>= 3)
             if old_id < 3 && new_id >= 3 {
@@ -51,7 +56,7 @@ impl SubmissionStore {
     }
 
     pub fn update_result(&self, token: &str, result: ExecutionResult) {
-        if let Some(mut entry) = self.inner.get_mut(token) {
+        if let Some(mut entry) = self.inner.get(token) {
             let old_id = entry.status.id;
             let status = match result.status {
                 ExecutionStatus::Accepted => StatusCode::accepted(),
@@ -71,6 +76,8 @@ impl SubmissionStore {
             entry.memory_kb = Some(result.memory_kb);
             entry.exit_code = Some(result.exit_code);
 
+            self.inner.insert(token.to_string(), entry);
+
             // Check transition from active (1 or 2) to completed (>= 3)
             if old_id < 3 && new_id >= 3 {
                 self.completed_count.fetch_add(1, Ordering::Relaxed);
@@ -83,7 +90,7 @@ impl SubmissionStore {
     }
 
     pub fn get(&self, token: &str) -> Option<SubmissionResponse> {
-        self.inner.get(token).map(|s| s.clone())
+        self.inner.get(token)
     }
 
     pub fn get_metrics(&self) -> (usize, f64, f64) {

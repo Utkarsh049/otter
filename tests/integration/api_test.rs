@@ -393,3 +393,109 @@ async fn test_disable_sandbox_mode() {
     }
     assert!(finished, "Un-jailed execution did not complete");
 }
+
+#[tokio::test]
+async fn test_api_key_authentication() {
+    let mut settings = get_test_settings();
+    settings.otter_api_key = Some("test-secret-api-key".to_string());
+
+    let app = build_router(settings);
+    let server = TestServer::new(app).unwrap();
+
+    let request_payload = SubmissionRequest {
+        language: "python".to_string(),
+        source_code: "print('authenticated!')".to_string(),
+        stdin: "".to_string(),
+        cpu_time_limit_ms: None,
+        memory_limit_mb: None,
+        wall_time_limit_ms: None,
+    };
+
+    // 1. Request without auth header -> 401 Unauthorized
+    let response_no_auth = server.post("/submissions").json(&request_payload).await;
+    response_no_auth.assert_status(axum::http::StatusCode::UNAUTHORIZED);
+
+    // 2. Request with malformed header -> 401 Unauthorized
+    let response_bad_auth = server.post("/submissions")
+        .add_header(
+            axum::http::HeaderName::from_static("authorization"),
+            axum::http::HeaderValue::from_static("Bearer wrong-key")
+        )
+        .json(&request_payload)
+        .await;
+    response_bad_auth.assert_status(axum::http::StatusCode::UNAUTHORIZED);
+
+    // 3. Request with valid header -> 201 Created
+    let response_valid_auth = server.post("/submissions")
+        .add_header(
+            axum::http::HeaderName::from_static("authorization"),
+            axum::http::HeaderValue::from_static("Bearer test-secret-api-key")
+        )
+        .json(&request_payload)
+        .await;
+    response_valid_auth.assert_status(axum::http::StatusCode::CREATED);
+
+    // 4. Request to public /health without auth -> 200 OK
+    let response_health = server.get("/health").await;
+    response_health.assert_status_ok();
+}
+
+#[tokio::test]
+async fn test_api_key_rate_limiting() {
+    let mut settings = get_test_settings();
+    settings.rate_limit_requests = Some(2);
+    settings.rate_limit_window_seconds = Some(60);
+    settings.otter_api_key = Some("key-a,key-b".to_string());
+
+    let app = build_router(settings);
+    let server = TestServer::new(app).unwrap();
+
+    let request_payload = SubmissionRequest {
+        language: "python".to_string(),
+        source_code: "print('auth rate limit test')".to_string(),
+        stdin: "".to_string(),
+        cpu_time_limit_ms: None,
+        memory_limit_mb: None,
+        wall_time_limit_ms: None,
+    };
+
+    // 1. First request for key-a -> 201 Created
+    let response = server.post("/submissions")
+        .add_header(
+            axum::http::HeaderName::from_static("authorization"),
+            axum::http::HeaderValue::from_static("Bearer key-a")
+        )
+        .json(&request_payload)
+        .await;
+    response.assert_status(axum::http::StatusCode::CREATED);
+
+    // 2. Second request for key-a -> 201 Created
+    let response = server.post("/submissions")
+        .add_header(
+            axum::http::HeaderName::from_static("authorization"),
+            axum::http::HeaderValue::from_static("Bearer key-a")
+        )
+        .json(&request_payload)
+        .await;
+    response.assert_status(axum::http::StatusCode::CREATED);
+
+    // 3. Third request for key-a -> 429 Too Many Requests
+    let response = server.post("/submissions")
+        .add_header(
+            axum::http::HeaderName::from_static("authorization"),
+            axum::http::HeaderValue::from_static("Bearer key-a")
+        )
+        .json(&request_payload)
+        .await;
+    response.assert_status(axum::http::StatusCode::TOO_MANY_REQUESTS);
+
+    // 4. Request for key-b (from same test client/IP) -> 201 Created
+    let response = server.post("/submissions")
+        .add_header(
+            axum::http::HeaderName::from_static("authorization"),
+            axum::http::HeaderValue::from_static("Bearer key-b")
+        )
+        .json(&request_payload)
+        .await;
+    response.assert_status(axum::http::StatusCode::CREATED);
+}

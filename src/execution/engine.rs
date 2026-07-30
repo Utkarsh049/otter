@@ -248,10 +248,15 @@ impl Engine {
             .stderr(Stdio::piped())
             .process_group(0);
 
-        let enforce_nproc = std::env::var("CI").is_ok()
-            || std::env::var("OTTER_ENFORCE_NPROC").is_ok()
+        let enforce_nproc = !disable_sandbox && (
+            std::env::var("APP_ENV").unwrap_or_default() == "production"
             || std::path::Path::new("/.dockerenv").exists()
-            || nix::unistd::getuid().is_root();
+            || std::env::var("CI").is_ok()
+            || std::env::var("OTTER_ENFORCE_NPROC").is_ok()
+            || nix::unistd::getuid().is_root()
+        );
+
+        let slot_id = ctx.limits.slot_id;
 
         unsafe {
             cmd.pre_exec(move || {
@@ -295,6 +300,16 @@ impl Engine {
 
                 // Set low CPU scheduling priority (nice = 15) to prevent starving the API server
                 let _ = nix::libc::setpriority(nix::libc::PRIO_PROCESS, 0, 15);
+
+                if let Some(slot) = slot_id {
+                    if let Ok(Some(num_cores)) = nix::unistd::sysconf(nix::unistd::SysconfVar::_NPROCESSORS_ONLN) {
+                        let core_id = slot % (num_cores as usize);
+                        let mut cpuset = nix::sched::CpuSet::new();
+                        if cpuset.set(core_id).is_ok() {
+                            let _ = nix::sched::sched_setaffinity(nix::unistd::Pid::from_raw(0), &cpuset);
+                        }
+                    }
+                }
 
                 Ok(())
             });
