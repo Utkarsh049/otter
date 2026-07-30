@@ -34,7 +34,8 @@ async fn run_attack(
         cpu_time_limit_ms: cpu_limit,
         memory_limit_mb: memory_limit,
         wall_time_limit_ms: wall_limit,
-    };
+        webhook_url: None,
+};
     
     let post_response = server.post("/submissions").json(&request_payload).await;
     post_response.assert_status(axum::http::StatusCode::CREATED);

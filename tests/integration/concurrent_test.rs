@@ -31,7 +31,8 @@ async fn test_twenty_simultaneous_submissions() {
                 cpu_time_limit_ms: None,
                 memory_limit_mb: None,
                 wall_time_limit_ms: None,
-            };
+                webhook_url: None,
+};
             
             let response = server_ref.post("/submissions").json(&request_payload).await;
             response.assert_status(axum::http::StatusCode::CREATED);
@@ -76,7 +77,8 @@ async fn test_bounded_concurrency_cap() {
             cpu_time_limit_ms: None,
             memory_limit_mb: None,
             wall_time_limit_ms: None,
-        };
+            webhook_url: None,
+};
         let response = server.post("/submissions").json(&request_payload).await;
         response.assert_status(axum::http::StatusCode::CREATED);
         tokens.push(response.json::<SubmissionResponse>().token);
@@ -120,7 +122,8 @@ async fn test_memory_leak_and_consistency() {
             cpu_time_limit_ms: None,
             memory_limit_mb: None,
             wall_time_limit_ms: None,
-        };
+            webhook_url: None,
+};
         
         let response = server.post("/submissions").json(&request_payload).await;
         response.assert_status(axum::http::StatusCode::CREATED);
@@ -164,7 +167,8 @@ async fn test_per_ip_concurrency_capping() {
             cpu_time_limit_ms: None,
             memory_limit_mb: None,
             wall_time_limit_ms: None,
-        };
+            webhook_url: None,
+};
         let response = server.post("/submissions")
             .add_header(
                 axum::http::HeaderName::from_static("x-forwarded-for"),
@@ -184,7 +188,8 @@ async fn test_per_ip_concurrency_capping() {
         cpu_time_limit_ms: None,
         memory_limit_mb: None,
         wall_time_limit_ms: None,
-    };
+        webhook_url: None,
+};
     let response_ip2 = server.post("/submissions")
         .add_header(
             axum::http::HeaderName::from_static("x-forwarded-for"),

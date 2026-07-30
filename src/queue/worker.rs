@@ -11,6 +11,7 @@ use crate::execution::engine::Engine;
 use crate::execution::limits::Limits;
 use crate::api::models::status::StatusCode;
 use crate::execution::result::ExecutionStatus;
+use crate::api::models::response::SubmissionResponse;
 
 struct QueueDepthGuard(Arc<AtomicUsize>);
 
@@ -28,6 +29,7 @@ pub struct QueuedJob {
     pub stdin: String,
     pub limits: Limits,
     pub ip: IpAddr,
+    pub webhook_url: Option<String>,
 }
 
 pub struct Worker {
@@ -42,6 +44,100 @@ pub struct Worker {
     slots: Arc<super::slot::SlotAllocator>,
     redis_client: Option<redis::Client>,
     in_flight: Arc<AtomicUsize>,
+    allow_loopback: bool,
+}
+
+fn is_blocklisted(ip: std::net::IpAddr) -> bool {
+    match ip {
+        std::net::IpAddr::V4(ipv4) => {
+            let octets = ipv4.octets();
+            // Loopback: 127.0.0.0/8
+            if octets[0] == 127 { return true; }
+            // Private networks:
+            // 10.0.0.0/8
+            if octets[0] == 10 { return true; }
+            // 172.16.0.0/12 -> 172.16.x.x to 172.31.x.x
+            if octets[0] == 172 && (octets[1] >= 16 && octets[1] <= 31) { return true; }
+            // 192.168.0.0/16
+            if octets[0] == 192 && octets[1] == 168 { return true; }
+            // Link-local: 169.254.0.0/16
+            if octets[0] == 169 && octets[1] == 254 { return true; }
+            // Unspecified: 0.0.0.0
+            if ipv4.is_unspecified() { return true; }
+            // Multicast: 224.0.0.0/4
+            if ipv4.is_multicast() { return true; }
+            // Broadcast: 255.255.255.255
+            if octets == [255, 255, 255, 255] { return true; }
+            
+            false
+        }
+        std::net::IpAddr::V6(ipv6) => {
+            let segments = ipv6.segments();
+            // Loopback: ::1
+            if ipv6.is_loopback() { return true; }
+            // Unspecified: ::
+            if ipv6.is_unspecified() { return true; }
+            // Multicast: ff00::/8
+            if ipv6.is_multicast() { return true; }
+            // Unique Local: fc00::/7 (fc00:: to fdff::)
+            if (segments[0] & 0xfe00) == 0xfc00 { return true; }
+            // Link-local: fe80::/10 (fe80:: to febf::)
+            if (segments[0] & 0xffc0) == 0xfe80 { return true; }
+            
+            false
+        }
+    }
+}
+
+async fn trigger_webhook(webhook_url: String, response: SubmissionResponse, allow_loopback: bool) {
+    let url = match url::Url::parse(&webhook_url) {
+        Ok(u) => u,
+        Err(e) => {
+            tracing::error!("Invalid webhook URL '{}': {:?}", webhook_url, e);
+            return;
+        }
+    };
+
+    let host = match url.host_str() {
+        Some(h) => h,
+        None => {
+            tracing::error!("No host in webhook URL '{}'", webhook_url);
+            return;
+        }
+    };
+
+    let port = url.port().unwrap_or(match url.scheme() {
+        "https" => 443,
+        _ => 80,
+    });
+
+    // Perform DNS resolution
+    let resolved = match tokio::net::lookup_host(format!("{}:{}", host, port)).await {
+        Ok(addrs) => addrs,
+        Err(e) => {
+            tracing::error!("Failed to resolve DNS for host '{}': {:?}", host, e);
+            return;
+        }
+    };
+
+    for addr in resolved {
+        let ip = addr.ip();
+        if !allow_loopback && is_blocklisted(ip) {
+            tracing::warn!("SSRF prevention: blocked webhook request to blocklisted IP {} for URL '{}'", ip, webhook_url);
+            return;
+        }
+    }
+
+    // Send HTTP POST request
+    let client = reqwest::Client::new();
+    match client.post(&webhook_url).json(&response).send().await {
+        Ok(res) => {
+            tracing::info!("Webhook sent to '{}' returned status {}", webhook_url, res.status());
+        }
+        Err(e) => {
+            tracing::error!("Failed to send webhook to '{}': {:?}", webhook_url, e);
+        }
+    }
 }
 
 impl Worker {
@@ -51,6 +147,7 @@ impl Worker {
         });
 
         let in_flight = Arc::new(AtomicUsize::new(0));
+        let allow_loopback = settings.allow_loopback_webhooks;
 
         if let Some(client) = redis_client.clone() {
             let store = store.clone();
@@ -110,6 +207,11 @@ impl Worker {
                                             None => {
                                                 tracing::error!("No slot available despite thread allocation");
                                                 store.update_status(&job.token, StatusCode::internal_error());
+                                                if let Some(webhook_url) = job.webhook_url.clone() {
+                                                    if let Some(resp) = store.get(&job.token) {
+                                                        tokio::spawn(trigger_webhook(webhook_url, resp, allow_loopback));
+                                                    }
+                                                }
                                                 in_flight.fetch_sub(1, Ordering::Relaxed);
                                                 continue;
                                             }
@@ -191,15 +293,31 @@ impl Worker {
                                                         }
                                                         _ => {}
                                                     }
+
+                                                    if let Some(webhook_url) = job.webhook_url.clone() {
+                                                        if let Some(resp) = store.get(&job.token) {
+                                                            tokio::spawn(trigger_webhook(webhook_url, resp, allow_loopback));
+                                                        }
+                                                    }
                                                 }
                                                 Err(e) => {
                                                     tracing::error!("Submission execution failed: {:?}", e);
                                                     store.update_status(&job.token, StatusCode::internal_error());
+                                                    if let Some(webhook_url) = job.webhook_url.clone() {
+                                                        if let Some(resp) = store.get(&job.token) {
+                                                            tokio::spawn(trigger_webhook(webhook_url, resp, allow_loopback));
+                                                        }
+                                                    }
                                                 }
                                             }
                                         } else {
                                             tracing::error!("Unsupported language {} for job {}", job.language_id, job.token);
                                             store.update_status(&job.token, StatusCode::internal_error());
+                                            if let Some(webhook_url) = job.webhook_url.clone() {
+                                                if let Some(resp) = store.get(&job.token) {
+                                                    tokio::spawn(trigger_webhook(webhook_url, resp, allow_loopback));
+                                                }
+                                            }
                                         }
 
                                         in_flight.fetch_sub(1, Ordering::Relaxed);
@@ -234,6 +352,7 @@ impl Worker {
             slots: Arc::new(super::slot::SlotAllocator::new(settings.max_concurrent)),
             redis_client,
             in_flight,
+            allow_loopback,
         }
     }
 
@@ -270,6 +389,7 @@ impl Worker {
         stdin: String,
         limits: Limits,
         ip: IpAddr,
+        webhook_url: Option<String>,
     ) -> Result<(), crate::api::errors::ApiError> {
         if let Some(ref client) = self.redis_client {
             let mut conn = client.get_connection().map_err(|_e| {
@@ -291,6 +411,7 @@ impl Worker {
                 stdin,
                 limits,
                 ip,
+                webhook_url,
             };
 
             let json = serde_json::to_string(&job).map_err(|_e| {
@@ -325,6 +446,9 @@ impl Worker {
                 .value()
                 .clone();
 
+            let webhook_url_clone = webhook_url.clone();
+            let allow_loopback = self.allow_loopback;
+
             tokio::spawn(async move {
                 let _guard = QueueDepthGuard(queue_depth);
                 
@@ -334,6 +458,11 @@ impl Worker {
                     Err(e) => {
                         tracing::error!("Failed to acquire IP semaphore permit: {:?}", e);
                         store.update_status(&token, StatusCode::internal_error());
+                        if let Some(webhook_url) = webhook_url_clone.clone() {
+                            if let Some(resp) = store.get(&token) {
+                                tokio::spawn(trigger_webhook(webhook_url, resp, allow_loopback));
+                            }
+                        }
                         return;
                     }
                 };
@@ -343,6 +472,11 @@ impl Worker {
                     Err(e) => {
                         tracing::error!("Failed to acquire semaphore permit: {:?}", e);
                         store.update_status(&token, StatusCode::internal_error());
+                        if let Some(webhook_url) = webhook_url_clone.clone() {
+                            if let Some(resp) = store.get(&token) {
+                                tokio::spawn(trigger_webhook(webhook_url, resp, allow_loopback));
+                            }
+                        }
                         return;
                     }
                 };
@@ -352,6 +486,11 @@ impl Worker {
                     None => {
                         tracing::error!("No free execution slot available despite having permit");
                         store.update_status(&token, StatusCode::internal_error());
+                        if let Some(webhook_url) = webhook_url_clone.clone() {
+                            if let Some(resp) = store.get(&token) {
+                                tokio::spawn(trigger_webhook(webhook_url, resp, allow_loopback));
+                            }
+                        }
                         return;
                     }
                 };
@@ -376,6 +515,11 @@ impl Worker {
                     Some(l) => l,
                     None => {
                         store.update_status(&token, StatusCode::internal_error());
+                        if let Some(webhook_url) = webhook_url_clone.clone() {
+                            if let Some(resp) = store.get(&token) {
+                                tokio::spawn(trigger_webhook(webhook_url, resp, allow_loopback));
+                            }
+                        }
                         return;
                     }
                 };
@@ -438,10 +582,21 @@ impl Worker {
                             }
                             _ => {}
                         }
+
+                        if let Some(webhook_url) = webhook_url_clone.clone() {
+                            if let Some(resp) = store.get(&token) {
+                                tokio::spawn(trigger_webhook(webhook_url, resp, allow_loopback));
+                            }
+                        }
                     }
                     Err(e) => {
                         tracing::error!("Submission execution failed: {:?}", e);
                         store.update_status(&token, StatusCode::internal_error());
+                        if let Some(webhook_url) = webhook_url_clone.clone() {
+                            if let Some(resp) = store.get(&token) {
+                                tokio::spawn(trigger_webhook(webhook_url, resp, allow_loopback));
+                            }
+                        }
                     }
                 }
                 

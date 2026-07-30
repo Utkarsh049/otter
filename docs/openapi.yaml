@@ -172,6 +172,10 @@ components:
         wall_time_limit_ms:
           type: integer
           example: 2000
+        webhook_url:
+          type: string
+          format: uri
+          example: https://yourserver.com/callback
     SubmissionResponse:
       type: object
       properties:

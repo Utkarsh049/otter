@@ -9,10 +9,21 @@ pub struct SubmissionRequest {
     pub cpu_time_limit_ms: Option<u64>,
     pub memory_limit_mb: Option<u64>,
     pub wall_time_limit_ms: Option<u64>,
+    pub webhook_url: Option<String>,
 }
 
 impl SubmissionRequest {
     pub fn validate(&self, settings: &crate::config::Settings) -> Result<(), crate::api::errors::ApiError> {
+        if let Some(ref url_str) = self.webhook_url {
+            let parsed = url::Url::parse(url_str).map_err(|e| {
+                crate::api::errors::ApiError::BadRequest(format!("invalid webhook_url: {}", e))
+            })?;
+            if parsed.scheme() != "http" && parsed.scheme() != "https" {
+                return Err(crate::api::errors::ApiError::BadRequest(
+                    "webhook_url scheme must be http or https".to_string()
+                ));
+            }
+        }
         if let Some(cpu) = self.cpu_time_limit_ms {
             if cpu == 0 {
                 return Err(crate::api::errors::ApiError::BadRequest(

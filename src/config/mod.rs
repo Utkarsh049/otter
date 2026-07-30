@@ -16,6 +16,7 @@ pub struct Settings {
     pub rate_limit_requests: Option<u64>,
     pub rate_limit_window_seconds: Option<u64>,
     pub otter_api_key: Option<String>,
+    pub allow_loopback_webhooks: bool,
 }
 
 impl Default for Settings {
@@ -35,6 +36,7 @@ impl Default for Settings {
             rate_limit_requests: None,
             rate_limit_window_seconds: None,
             otter_api_key: None,
+            allow_loopback_webhooks: false,
         }
     }
 }
@@ -97,6 +99,9 @@ impl Settings {
             rate_limit_window_seconds: std::env::var("RATE_LIMIT_WINDOW_SECONDS").ok()
                 .and_then(|s| s.parse().ok()),
             otter_api_key: std::env::var("OTTER_API_KEY").ok(),
+            allow_loopback_webhooks: std::env::var("ALLOW_LOOPBACK_WEBHOOKS")
+                .map(|s| s.parse().unwrap_or(false))
+                .unwrap_or(false),
         })
     }
 }

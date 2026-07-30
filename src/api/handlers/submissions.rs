@@ -72,6 +72,7 @@ pub async fn submit(
         req.stdin,
         limits,
         ip,
+        req.webhook_url,
     )?;
     
     Ok((
@@ -145,6 +146,7 @@ pub async fn submit_batch(
             req.stdin,
             limits,
             ip,
+            req.webhook_url,
         )?;
 
         responses.push(SubmissionResponse {

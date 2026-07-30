@@ -84,6 +84,7 @@ Creates a single code execution task. The execution runs asynchronously in the b
   * `cpu_time_limit_ms` (integer, optional): CPU execution cap. Defaults to server setting.
   * `memory_limit_mb` (integer, optional): Peak memory boundary. Defaults to server setting.
   * `wall_time_limit_ms` (integer, optional): Total wall-clock execution limit.
+  * `webhook_url` (string, optional): HTTP/HTTPS endpoint to receive execution results asynchronously. SSRF protection is enforced.
 
 * **Request Body**:
 ```json
@@ -93,7 +94,8 @@ Creates a single code execution task. The execution runs asynchronously in the b
   "stdin": "Otter",
   "cpu_time_limit_ms": 1000,
   "memory_limit_mb": 64,
-  "wall_time_limit_ms": 2000
+  "wall_time_limit_ms": 2000,
+  "webhook_url": "https://yourserver.com/callback"
 }
 ```
 
