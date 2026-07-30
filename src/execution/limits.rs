@@ -1,4 +1,4 @@
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Limits {
     pub cpu_time_ms: u64,
     pub wall_time_ms: u64,
