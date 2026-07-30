@@ -13,10 +13,13 @@ use super::handlers::{health, languages, submissions};
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
+#[derive(Clone)]
+pub struct ApiKeyExtension(pub String);
+
 pub struct RateLimiter {
     requests: u64,
     window: Duration,
-    clients: DashMap<IpAddr, (u64, Instant)>,
+    clients: DashMap<String, (u64, Instant)>,
     access_count: AtomicU64,
 }
 
@@ -30,7 +33,7 @@ impl RateLimiter {
         }
     }
 
-    pub fn check(&self, ip: IpAddr) -> bool {
+    pub fn check(&self, client_id: &str) -> bool {
         let now = Instant::now();
         
         // Periodically clean up expired entries to avoid memory leak
@@ -42,7 +45,7 @@ impl RateLimiter {
             });
         }
 
-        let mut entry = self.clients.entry(ip).or_insert((0, now));
+        let mut entry = self.clients.entry(client_id.to_string()).or_insert((0, now));
         let (count, start_time) = entry.value_mut();
         
         if now.duration_since(*start_time) >= self.window {
@@ -72,22 +75,26 @@ pub async fn rate_limit_middleware(
         None => return next.run(req).await,
     };
 
-    let fallback_ip = connect_info.map(|c| c.0.ip()).unwrap_or_else(|| "127.0.0.1".parse().unwrap());
-    
-    let ip = req.headers()
-        .get("x-forwarded-for")
-        .and_then(|h| h.to_str().ok())
-        .and_then(|s| s.split(',').next())
-        .and_then(|s| s.trim().parse::<IpAddr>().ok())
-        .or_else(|| {
-            req.headers()
-                .get("x-real-ip")
-                .and_then(|h| h.to_str().ok())
-                .and_then(|s| s.trim().parse::<IpAddr>().ok())
-        })
-        .unwrap_or(fallback_ip);
+    let client_id = if let Some(ApiKeyExtension(api_key)) = req.extensions().get::<ApiKeyExtension>() {
+        api_key.clone()
+    } else {
+        let fallback_ip = connect_info.map(|c| c.0.ip()).unwrap_or_else(|| "127.0.0.1".parse().unwrap());
+        let ip = req.headers()
+            .get("x-forwarded-for")
+            .and_then(|h| h.to_str().ok())
+            .and_then(|s| s.split(',').next())
+            .and_then(|s| s.trim().parse::<IpAddr>().ok())
+            .or_else(|| {
+                req.headers()
+                    .get("x-real-ip")
+                    .and_then(|h| h.to_str().ok())
+                    .and_then(|s| s.trim().parse::<IpAddr>().ok())
+            })
+            .unwrap_or(fallback_ip);
+        ip.to_string()
+    };
 
-    if !limiter.check(ip) {
+    if !limiter.check(&client_id) {
         return (
             StatusCode::TOO_MANY_REQUESTS,
             Json(serde_json::json!({ "error": "rate limit exceeded" }))
@@ -99,34 +106,39 @@ pub async fn rate_limit_middleware(
 
 pub async fn api_key_auth_middleware(
     Extension(settings): Extension<Settings>,
-    req: Request<Body>,
+    mut req: Request<Body>,
     next: Next,
 ) -> Response {
+    if req.uri().path() == "/health" {
+        return next.run(req).await;
+    }
+
     if let Some(ref expected_key) = settings.otter_api_key {
+        let valid_keys: Vec<&str> = expected_key.split(',').map(|s| s.trim()).collect();
         let auth_header = req
             .headers()
             .get(axum::http::header::AUTHORIZATION)
             .and_then(|h| h.to_str().ok());
 
-        let is_valid = if let Some(auth_str) = auth_header {
+        let mut authenticated_token = None;
+
+        if let Some(auth_str) = auth_header {
             if auth_str.starts_with("Bearer ") {
                 let token = &auth_str[7..];
                 let token_bytes = token.as_bytes();
-                let expected_bytes = expected_key.as_bytes();
+                
                 use subtle::ConstantTimeEq;
-                if token_bytes.len() == expected_bytes.len() {
-                    token_bytes.ct_eq(expected_bytes).unwrap_u8() == 1
-                } else {
-                    false
+                for key in valid_keys {
+                    let key_bytes = key.as_bytes();
+                    if token_bytes.len() == key_bytes.len() && token_bytes.ct_eq(key_bytes).unwrap_u8() == 1 {
+                        authenticated_token = Some(token.to_string());
+                        break;
+                    }
                 }
-            } else {
-                false
             }
-        } else {
-            false
-        };
+        }
 
-        if !is_valid {
+        if authenticated_token.is_none() {
             return (
                 StatusCode::UNAUTHORIZED,
                 Json(serde_json::json!({
@@ -134,6 +146,10 @@ pub async fn api_key_auth_middleware(
                     "message": "Invalid or missing API key in Authorization header"
                 }))
             ).into_response();
+        }
+
+        if let Some(token) = authenticated_token {
+            req.extensions_mut().insert(ApiKeyExtension(token));
         }
     }
 
@@ -153,21 +169,13 @@ pub fn build_router_with_components(
     store: Arc<SubmissionStore>,
     worker: Arc<Worker>,
 ) -> Router {
-    let authenticated_routes = Router::new()
+    let mut router = Router::new()
+        .route("/health",             get(health::health))
         .route("/languages",          get(languages::list_languages))
         .route("/submissions",        post(submissions::submit))
         .route("/submissions/:token", get(submissions::get_submission))
         .route("/submissions/batch",   post(submissions::submit_batch))
-        .route("/metrics",             get(super::handlers::metrics::get_metrics))
-        .layer(middleware::from_fn(api_key_auth_middleware));
-
-    let mut router = Router::new()
-        .route("/health",             get(health::health))
-        .merge(authenticated_routes)
-        .layer(Extension(registry))
-        .layer(Extension(store))
-        .layer(Extension(worker))
-        .layer(Extension(settings.clone()));
+        .route("/metrics",             get(super::handlers::metrics::get_metrics));
 
     if let (Some(requests), Some(window_secs)) = (settings.rate_limit_requests, settings.rate_limit_window_seconds) {
         let limiter = Arc::new(RateLimiter::new(requests, window_secs));
@@ -175,6 +183,14 @@ pub fn build_router_with_components(
             .layer(middleware::from_fn(rate_limit_middleware))
             .layer(Extension(limiter));
     }
+
+    router = router.layer(middleware::from_fn(api_key_auth_middleware));
+
+    router = router
+        .layer(Extension(registry))
+        .layer(Extension(store))
+        .layer(Extension(worker))
+        .layer(Extension(settings.clone()));
 
     router
 }
