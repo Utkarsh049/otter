@@ -242,7 +242,7 @@ impl Worker {
                                             let exec_result = Engine::execute(lang, job.source_code, job.stdin, limits_with_slot).await;
                                             match exec_result {
                                                 Ok(res) => {
-                                                    store.update_result(&job.token, res.clone());
+                                                    store.update_result(&job.token, res.clone(), &job.language_id);
                                                     
                                                     let status_str = format!("{:?}", res.status);
                                                     tracing::info!(
@@ -531,7 +531,7 @@ impl Worker {
                 
                 match exec_result {
                     Ok(res) => {
-                        store.update_result(&token, res.clone());
+                        store.update_result(&token, res.clone(), &language_id);
                         
                         let status_str = format!("{:?}", res.status);
                         tracing::info!(

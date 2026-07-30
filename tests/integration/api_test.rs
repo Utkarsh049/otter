@@ -138,12 +138,14 @@ async fn test_metrics_endpoint() {
     let server = TestServer::new(app).unwrap();
 
     // 1. Initial metrics should be 0 count, 0.0 error rate, 0.0 latency
-    let response = server.get("/metrics").await;
+    let response = server.get("/admin/metrics").await;
     response.assert_status_ok();
     let body = response.json::<serde_json::Value>();
-    assert_eq!(body["count"].as_u64().unwrap(), 0);
-    assert_eq!(body["error_rate"].as_f64().unwrap(), 0.0);
-    assert_eq!(body["avg_latency"].as_f64().unwrap(), 0.0);
+    assert_eq!(body["submissions"]["count"].as_u64().unwrap(), 0);
+    assert_eq!(body["submissions"]["error_rate"].as_f64().unwrap(), 0.0);
+    assert_eq!(body["submissions"]["avg_latency_ms"].as_f64().unwrap(), 0.0);
+    assert_eq!(body["status_breakdown"]["accepted"].as_u64().unwrap(), 0);
+    assert_eq!(body["languages"]["python"].as_u64().unwrap(), 0);
 
     // 2. Submit a successful Python job
     let request_payload = SubmissionRequest {
@@ -154,7 +156,7 @@ async fn test_metrics_endpoint() {
         memory_limit_mb: None,
         wall_time_limit_ms: None,
         webhook_url: None,
-};
+    };
     let post_response = server.post("/submissions").json(&request_payload).await;
     post_response.assert_status(axum::http::StatusCode::CREATED);
     let token = post_response.json::<SubmissionResponse>().token;
@@ -176,12 +178,15 @@ async fn test_metrics_endpoint() {
     assert!(finished, "Job did not finish");
 
     // 3. Verify metrics updated (count=1, error_rate=0.0)
-    let response = server.get("/metrics").await;
+    let response = server.get("/admin/metrics").await;
     response.assert_status_ok();
     let body = response.json::<serde_json::Value>();
-    assert_eq!(body["count"].as_u64().unwrap(), 1);
-    assert_eq!(body["error_rate"].as_f64().unwrap(), 0.0);
-    assert!(body["avg_latency"].as_f64().unwrap() >= 0.0);
+    assert_eq!(body["submissions"]["count"].as_u64().unwrap(), 1);
+    assert_eq!(body["submissions"]["error_rate"].as_f64().unwrap(), 0.0);
+    assert!(body["submissions"]["avg_latency_ms"].as_f64().unwrap() >= 0.0);
+    assert_eq!(body["status_breakdown"]["accepted"].as_u64().unwrap(), 1);
+    assert_eq!(body["languages"]["python"].as_u64().unwrap(), 1);
+    assert_eq!(body["queue"]["depth"].as_u64().unwrap(), 0);
 
     // 4. Submit a compile error job
     let request_payload_err = SubmissionRequest {
@@ -192,7 +197,7 @@ async fn test_metrics_endpoint() {
         memory_limit_mb: None,
         wall_time_limit_ms: None,
         webhook_url: None,
-};
+    };
     let post_response = server.post("/submissions").json(&request_payload_err).await;
     post_response.assert_status(axum::http::StatusCode::CREATED);
     let token_err = post_response.json::<SubmissionResponse>().token;
@@ -212,11 +217,41 @@ async fn test_metrics_endpoint() {
     assert!(finished_err, "Err job did not finish");
 
     // 5. Verify metrics count is 2, error rate is 0.5
-    let response = server.get("/metrics").await;
+    let response = server.get("/admin/metrics").await;
     response.assert_status_ok();
     let body = response.json::<serde_json::Value>();
-    assert_eq!(body["count"].as_u64().unwrap(), 2);
-    assert_eq!(body["error_rate"].as_f64().unwrap(), 0.5);
+    assert_eq!(body["submissions"]["count"].as_u64().unwrap(), 2);
+    assert_eq!(body["submissions"]["error_rate"].as_f64().unwrap(), 0.5);
+    assert_eq!(body["status_breakdown"]["compilation_error"].as_u64().unwrap(), 1);
+    assert_eq!(body["languages"]["c"].as_u64().unwrap(), 1);
+
+    // 6. Test authorization for /admin/metrics when API key is set
+    let mut authed_settings = get_test_settings();
+    authed_settings.otter_api_key = Some("admin-secret-key".to_string());
+    let authed_app = build_router(authed_settings);
+    let authed_server = TestServer::new(authed_app).unwrap();
+
+    // 6a. Request without auth -> 401 Unauthorized
+    let response = authed_server.get("/admin/metrics").await;
+    response.assert_status(axum::http::StatusCode::UNAUTHORIZED);
+
+    // 6b. Request with bad auth -> 401 Unauthorized
+    let response = authed_server.get("/admin/metrics")
+        .add_header(
+            axum::http::HeaderName::from_static("authorization"),
+            axum::http::HeaderValue::from_static("Bearer bad-key")
+        )
+        .await;
+    response.assert_status(axum::http::StatusCode::UNAUTHORIZED);
+
+    // 6c. Request with correct auth -> 200 OK
+    let response = authed_server.get("/admin/metrics")
+        .add_header(
+            axum::http::HeaderName::from_static("authorization"),
+            axum::http::HeaderValue::from_static("Bearer admin-secret-key")
+        )
+        .await;
+    response.assert_status_ok();
 }
 
 #[tokio::test]

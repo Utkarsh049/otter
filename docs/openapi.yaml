@@ -111,29 +111,74 @@ paths:
                 $ref: '#/components/schemas/BatchSubmissionResponse'
         '400':
           description: Invalid request payload or configuration limits
-  /metrics:
+  /admin/metrics:
     get:
-      summary: Observability run metrics
-      description: Exposes completed job count, error rate, and average execution latency.
+      summary: Secured administrative metrics
+      description: Returns dynamic run statistics, queue status, language usage, and run breakdowns. Requires authentication key.
       responses:
         '200':
-          description: Current runtime statistics
+          description: Dynamic runtime metrics
           content:
             application/json:
               schema:
                 type: object
                 properties:
-                  count:
-                    type: integer
-                    example: 24
-                  error_rate:
-                    type: number
-                    format: float
-                    example: 0.125
-                  avg_latency:
-                    type: number
-                    format: float
-                    example: 104.5
+                  submissions:
+                    type: object
+                    properties:
+                      count:
+                        type: integer
+                        example: 150
+                      error_rate:
+                        type: number
+                        format: float
+                        example: 0.12
+                      avg_latency_ms:
+                        type: number
+                        format: float
+                        example: 115.4
+                  status_breakdown:
+                    type: object
+                    properties:
+                      accepted:
+                        type: integer
+                        example: 132
+                      compilation_error:
+                        type: integer
+                        example: 8
+                      time_limit_exceeded:
+                        type: integer
+                        example: 4
+                      memory_limit_exceeded:
+                        type: integer
+                        example: 3
+                      runtime_error:
+                        type: integer
+                        example: 3
+                  languages:
+                    type: object
+                    properties:
+                      python:
+                        type: integer
+                        example: 75
+                      javascript:
+                        type: integer
+                        example: 50
+                      c:
+                        type: integer
+                        example: 15
+                      cpp:
+                        type: integer
+                        example: 10
+                  queue:
+                    type: object
+                    properties:
+                      depth:
+                        type: integer
+                        example: 2
+                      in_flight:
+                        type: integer
+                        example: 4
 components:
   schemas:
     LanguageInfo:

@@ -263,24 +263,43 @@ curl -X POST http://localhost:8080/submissions/batch \
 
 ---
 
-## 6. Observability Metrics
-Returns the engine's dynamic run statistics.
+## 6. Secured Observability Metrics
+Returns the engine's dynamic run statistics, queue status, language usage, and run breakdowns.
 
-* **URL**: `/metrics`
+* **URL**: `/admin/metrics`
 * **Method**: `GET`
-* **Response Status**: `200 OK`
+* **Response Status**: `200 OK` (requires authorization bearer token if API key is configured)
 * **Response Body**:
 ```json
 {
-  "count": 42,
-  "error_rate": 0.0476,
-  "avg_latency": 128.5
+  "submissions": {
+    "count": 150,
+    "error_rate": 0.12,
+    "avg_latency_ms": 115.4
+  },
+  "status_breakdown": {
+    "accepted": 132,
+    "compilation_error": 8,
+    "time_limit_exceeded": 4,
+    "memory_limit_exceeded": 3,
+    "runtime_error": 3
+  },
+  "languages": {
+    "python": 75,
+    "javascript": 50,
+    "c": 15,
+    "cpp": 10
+  },
+  "queue": {
+    "depth": 2,
+    "in_flight": 4
+  }
 }
 ```
 
 * **Example Request**:
 ```bash
-curl -X GET http://localhost:8080/metrics
+curl -X GET http://localhost:8080/admin/metrics -H "Authorization: Bearer <your-key>"
 ```
 
 ---
