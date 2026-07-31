@@ -167,18 +167,17 @@ impl Worker {
                 let in_flight = in_flight.clone();
 
                 tokio::spawn(async move {
-                    loop {
-                        let mut conn = match client.get_connection() {
-                            Ok(c) => c,
-                            Err(e) => {
-                                tracing::error!("Worker failed to connect to Redis: {:?}", e);
-                                tokio::time::sleep(Duration::from_secs(1)).await;
-                                continue;
-                            }
-                        };
+                    let mut conn = match client.get_async_connection().await {
+                        Ok(c) => c,
+                        Err(e) => {
+                            tracing::error!("Worker failed to connect to Redis: {:?}", e);
+                            return;
+                        }
+                    };
 
-                        use redis::Commands;
-                        let popped: Result<Option<(String, String)>, redis::RedisError> = conn.brpop("queue:submissions", 1.0);
+                    loop {
+                        use redis::AsyncCommands;
+                        let popped: Result<Option<(String, String)>, redis::RedisError> = conn.brpop("queue:submissions", 1.0).await;
                         match popped {
                             Ok(Some((_, json_str))) => {
                                 let job: QueuedJob = match serde_json::from_str(&json_str) {
@@ -198,17 +197,16 @@ impl Worker {
                                 let ip_permit = ip_sem.try_acquire();
                                 match ip_permit {
                                     Ok(_ip_permit) => {
-                                        // Update status to processing
-                                        store.update_status(&job.token, StatusCode::processing());
+                                        store.update_status(&job.token, StatusCode::processing()).await;
                                         in_flight.fetch_add(1, Ordering::Relaxed);
 
                                         let slot_id = match slots.allocate() {
                                             Some(id) => id,
                                             None => {
                                                 tracing::error!("No slot available despite thread allocation");
-                                                store.update_status(&job.token, StatusCode::internal_error());
+                                                store.update_status(&job.token, StatusCode::internal_error()).await;
                                                 if let Some(webhook_url) = job.webhook_url.clone() {
-                                                    if let Some(resp) = store.get(&job.token) {
+                                                    if let Some(resp) = store.get(&job.token).await {
                                                         tokio::spawn(trigger_webhook(webhook_url, resp, allow_loopback));
                                                     }
                                                 }
@@ -242,7 +240,7 @@ impl Worker {
                                             let exec_result = Engine::execute(lang, job.source_code, job.stdin, limits_with_slot).await;
                                             match exec_result {
                                                 Ok(res) => {
-                                                    store.update_result(&job.token, res.clone(), &job.language_id);
+                                                    store.update_result(&job.token, res.clone(), &job.language_id).await;
                                                     
                                                     let status_str = format!("{:?}", res.status);
                                                     tracing::info!(
@@ -295,16 +293,16 @@ impl Worker {
                                                     }
 
                                                     if let Some(webhook_url) = job.webhook_url.clone() {
-                                                        if let Some(resp) = store.get(&job.token) {
+                                                        if let Some(resp) = store.get(&job.token).await {
                                                             tokio::spawn(trigger_webhook(webhook_url, resp, allow_loopback));
                                                         }
                                                     }
                                                 }
                                                 Err(e) => {
                                                     tracing::error!("Submission execution failed: {:?}", e);
-                                                    store.update_status(&job.token, StatusCode::internal_error());
+                                                    store.update_status(&job.token, StatusCode::internal_error()).await;
                                                     if let Some(webhook_url) = job.webhook_url.clone() {
-                                                        if let Some(resp) = store.get(&job.token) {
+                                                        if let Some(resp) = store.get(&job.token).await {
                                                             tokio::spawn(trigger_webhook(webhook_url, resp, allow_loopback));
                                                         }
                                                     }
@@ -312,9 +310,9 @@ impl Worker {
                                             }
                                         } else {
                                             tracing::error!("Unsupported language {} for job {}", job.language_id, job.token);
-                                            store.update_status(&job.token, StatusCode::internal_error());
+                                            store.update_status(&job.token, StatusCode::internal_error()).await;
                                             if let Some(webhook_url) = job.webhook_url.clone() {
-                                                if let Some(resp) = store.get(&job.token) {
+                                                if let Some(resp) = store.get(&job.token).await {
                                                     tokio::spawn(trigger_webhook(webhook_url, resp, allow_loopback));
                                                 }
                                             }
@@ -324,7 +322,7 @@ impl Worker {
                                     }
                                     Err(_) => {
                                         // Push job back onto queue (RPUSH) and sleep
-                                        let _: Result<(), redis::RedisError> = conn.rpush("queue:submissions", json_str);
+                                        let _: Result<(), redis::RedisError> = conn.rpush("queue:submissions", json_str).await;
                                         tokio::time::sleep(Duration::from_millis(50)).await;
                                     }
                                 }
@@ -364,11 +362,11 @@ impl Worker {
         }
     }
 
-    pub fn queue_depth(&self) -> usize {
+    pub async fn queue_depth(&self) -> usize {
         if let Some(ref client) = self.redis_client {
-            if let Ok(mut conn) = client.get_connection() {
-                use redis::Commands;
-                conn.llen("queue:submissions").unwrap_or(0)
+            if let Ok(mut conn) = client.get_async_connection().await {
+                use redis::AsyncCommands;
+                conn.llen("queue:submissions").await.unwrap_or(0)
             } else {
                 0
             }
@@ -381,7 +379,7 @@ impl Worker {
         self.max_queue_depth
     }
 
-    pub fn enqueue(
+    pub async fn enqueue(
         &self,
         token: String,
         language_id: String,
@@ -392,12 +390,12 @@ impl Worker {
         webhook_url: Option<String>,
     ) -> Result<(), crate::api::errors::ApiError> {
         if let Some(ref client) = self.redis_client {
-            let mut conn = client.get_connection().map_err(|_e| {
+            let mut conn = client.get_async_connection().await.map_err(|_e| {
                 crate::api::errors::ApiError::InternalError("Failed to connect to Redis".to_string())
             })?;
 
-            use redis::Commands;
-            let current: usize = conn.llen("queue:submissions").unwrap_or(0);
+            use redis::AsyncCommands;
+            let current: usize = conn.llen("queue:submissions").await.unwrap_or(0);
             if current >= self.max_queue_depth {
                 return Err(crate::api::errors::ApiError::TooManyRequests(
                     "server is at capacity, try again shortly".to_string()
@@ -418,7 +416,9 @@ impl Worker {
                 crate::api::errors::ApiError::InternalError("Failed to serialize job".to_string())
             })?;
 
-            let _: Result<(), redis::RedisError> = conn.lpush("queue:submissions", json);
+            conn.lpush::<_, _, ()>("queue:submissions", json).await.map_err(|e| {
+                crate::api::errors::ApiError::InternalError(format!("Failed to enqueue job in Redis: {:?}", e))
+            })?;
             Ok(())
         } else {
             // Existing in-memory logic
@@ -457,9 +457,9 @@ impl Worker {
                     Ok(p) => p,
                     Err(e) => {
                         tracing::error!("Failed to acquire IP semaphore permit: {:?}", e);
-                        store.update_status(&token, StatusCode::internal_error());
+                        store.update_status(&token, StatusCode::internal_error()).await;
                         if let Some(webhook_url) = webhook_url_clone.clone() {
-                            if let Some(resp) = store.get(&token) {
+                            if let Some(resp) = store.get(&token).await {
                                 tokio::spawn(trigger_webhook(webhook_url, resp, allow_loopback));
                             }
                         }
@@ -471,9 +471,9 @@ impl Worker {
                     Ok(p) => p,
                     Err(e) => {
                         tracing::error!("Failed to acquire semaphore permit: {:?}", e);
-                        store.update_status(&token, StatusCode::internal_error());
+                        store.update_status(&token, StatusCode::internal_error()).await;
                         if let Some(webhook_url) = webhook_url_clone.clone() {
-                            if let Some(resp) = store.get(&token) {
+                            if let Some(resp) = store.get(&token).await {
                                 tokio::spawn(trigger_webhook(webhook_url, resp, allow_loopback));
                             }
                         }
@@ -485,9 +485,9 @@ impl Worker {
                     Some(id) => id,
                     None => {
                         tracing::error!("No free execution slot available despite having permit");
-                        store.update_status(&token, StatusCode::internal_error());
+                        store.update_status(&token, StatusCode::internal_error()).await;
                         if let Some(webhook_url) = webhook_url_clone.clone() {
-                            if let Some(resp) = store.get(&token) {
+                            if let Some(resp) = store.get(&token).await {
                                 tokio::spawn(trigger_webhook(webhook_url, resp, allow_loopback));
                             }
                         }
@@ -509,14 +509,14 @@ impl Worker {
                     allocator: slots.clone(),
                 };
 
-                store.update_status(&token, StatusCode::processing());
+                store.update_status(&token, StatusCode::processing()).await;
                 
                 let lang = match registry.get(&language_id) {
                     Some(l) => l,
                     None => {
-                        store.update_status(&token, StatusCode::internal_error());
+                        store.update_status(&token, StatusCode::internal_error()).await;
                         if let Some(webhook_url) = webhook_url_clone.clone() {
-                            if let Some(resp) = store.get(&token) {
+                            if let Some(resp) = store.get(&token).await {
                                 tokio::spawn(trigger_webhook(webhook_url, resp, allow_loopback));
                             }
                         }
@@ -531,7 +531,7 @@ impl Worker {
                 
                 match exec_result {
                     Ok(res) => {
-                        store.update_result(&token, res.clone(), &language_id);
+                        store.update_result(&token, res.clone(), &language_id).await;
                         
                         let status_str = format!("{:?}", res.status);
                         tracing::info!(
@@ -584,16 +584,16 @@ impl Worker {
                         }
 
                         if let Some(webhook_url) = webhook_url_clone.clone() {
-                            if let Some(resp) = store.get(&token) {
+                            if let Some(resp) = store.get(&token).await {
                                 tokio::spawn(trigger_webhook(webhook_url, resp, allow_loopback));
                             }
                         }
                     }
                     Err(e) => {
                         tracing::error!("Submission execution failed: {:?}", e);
-                        store.update_status(&token, StatusCode::internal_error());
+                        store.update_status(&token, StatusCode::internal_error()).await;
                         if let Some(webhook_url) = webhook_url_clone.clone() {
-                            if let Some(resp) = store.get(&token) {
+                            if let Some(resp) = store.get(&token).await {
                                 tokio::spawn(trigger_webhook(webhook_url, resp, allow_loopback));
                             }
                         }

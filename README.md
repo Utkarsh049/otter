@@ -100,7 +100,7 @@ curl http://localhost:8080/languages
 | Method | Endpoint | Description |
 |---|---|---|
 | `POST` | `/submissions` | Submit code for execution |
-| `GET` | `/submissions` | List recent submissions history |
+| `GET` | `/admin/submissions` | List recent submissions history |
 | `GET` | `/submissions/:token` | Poll submission result |
 | `POST` | `/submissions/batch` | Submit multiple at once |
 | `GET` | `/languages` | List supported languages |

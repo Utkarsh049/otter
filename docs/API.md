@@ -128,12 +128,12 @@ curl -X POST http://localhost:8080/submissions \
 
 ---
 
-## 3b. List Submissions History
-Returns a list of all active or recently executed submissions stored in the system.
+## 3. List Submissions
+Returns a list of all active or recently executed submissions.
 
-* **URL**: `/submissions`
+* **URL**: `/admin/submissions`
 * **Method**: `GET`
-* **Response Status**: `200 OK`
+* **Response Status**: `200 OK` (requires authorization bearer token if API key is configured)
 * **Response Body**:
 ```json
 [
@@ -143,11 +143,11 @@ Returns a list of all active or recently executed submissions stored in the syst
       "id": 3,
       "description": "Accepted"
     },
-    "stdout": "Hello Otter!\n",
+    "stdout": "Hello, World!\n",
     "stderr": "",
     "compile_output": "",
-    "time_ms": 52,
-    "memory_kb": 8120,
+    "time_ms": 12,
+    "memory_kb": 8012,
     "exit_code": 0
   }
 ]
@@ -155,7 +155,7 @@ Returns a list of all active or recently executed submissions stored in the syst
 
 * **Example Request**:
 ```bash
-curl -X GET http://localhost:8080/submissions
+curl -X GET http://localhost:8080/admin/submissions -H "Authorization: Bearer <your-key>"
 ```
 
 ---
