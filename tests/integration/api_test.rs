@@ -4,10 +4,12 @@ use otter::config::Settings;
 use otter::api::models::response::SubmissionResponse;
 use otter::api::models::request::SubmissionRequest;
 use std::time::Duration;
+use std::sync::Arc;
 
 fn get_test_settings() -> Settings {
     Settings {
         max_concurrent: 4,
+        allow_loopback_webhooks: true,
         ..Settings::default()
     }
 }
@@ -56,7 +58,8 @@ async fn test_submit_and_poll_happy_path() {
         cpu_time_limit_ms: None,
         memory_limit_mb: None,
         wall_time_limit_ms: None,
-    };
+        webhook_url: None,
+};
     
     let post_response = server.post("/submissions").json(&request_payload).await;
     post_response.assert_status(axum::http::StatusCode::CREATED);
@@ -98,7 +101,8 @@ async fn test_unsupported_language() {
         cpu_time_limit_ms: None,
         memory_limit_mb: None,
         wall_time_limit_ms: None,
-    };
+        webhook_url: None,
+};
     
     let post_response = server.post("/submissions").json(&request_payload).await;
     post_response.assert_status_bad_request();
@@ -134,12 +138,14 @@ async fn test_metrics_endpoint() {
     let server = TestServer::new(app).unwrap();
 
     // 1. Initial metrics should be 0 count, 0.0 error rate, 0.0 latency
-    let response = server.get("/metrics").await;
+    let response = server.get("/admin/metrics").await;
     response.assert_status_ok();
     let body = response.json::<serde_json::Value>();
-    assert_eq!(body["count"].as_u64().unwrap(), 0);
-    assert_eq!(body["error_rate"].as_f64().unwrap(), 0.0);
-    assert_eq!(body["avg_latency"].as_f64().unwrap(), 0.0);
+    assert_eq!(body["submissions"]["count"].as_u64().unwrap(), 0);
+    assert_eq!(body["submissions"]["error_rate"].as_f64().unwrap(), 0.0);
+    assert_eq!(body["submissions"]["avg_latency_ms"].as_f64().unwrap(), 0.0);
+    assert_eq!(body["status_breakdown"]["accepted"].as_u64().unwrap(), 0);
+    assert_eq!(body["languages"]["python"].as_u64().unwrap(), 0);
 
     // 2. Submit a successful Python job
     let request_payload = SubmissionRequest {
@@ -149,6 +155,7 @@ async fn test_metrics_endpoint() {
         cpu_time_limit_ms: None,
         memory_limit_mb: None,
         wall_time_limit_ms: None,
+        webhook_url: None,
     };
     let post_response = server.post("/submissions").json(&request_payload).await;
     post_response.assert_status(axum::http::StatusCode::CREATED);
@@ -171,12 +178,15 @@ async fn test_metrics_endpoint() {
     assert!(finished, "Job did not finish");
 
     // 3. Verify metrics updated (count=1, error_rate=0.0)
-    let response = server.get("/metrics").await;
+    let response = server.get("/admin/metrics").await;
     response.assert_status_ok();
     let body = response.json::<serde_json::Value>();
-    assert_eq!(body["count"].as_u64().unwrap(), 1);
-    assert_eq!(body["error_rate"].as_f64().unwrap(), 0.0);
-    assert!(body["avg_latency"].as_f64().unwrap() >= 0.0);
+    assert_eq!(body["submissions"]["count"].as_u64().unwrap(), 1);
+    assert_eq!(body["submissions"]["error_rate"].as_f64().unwrap(), 0.0);
+    assert!(body["submissions"]["avg_latency_ms"].as_f64().unwrap() >= 0.0);
+    assert_eq!(body["status_breakdown"]["accepted"].as_u64().unwrap(), 1);
+    assert_eq!(body["languages"]["python"].as_u64().unwrap(), 1);
+    assert_eq!(body["queue"]["depth"].as_u64().unwrap(), 0);
 
     // 4. Submit a compile error job
     let request_payload_err = SubmissionRequest {
@@ -186,6 +196,7 @@ async fn test_metrics_endpoint() {
         cpu_time_limit_ms: None,
         memory_limit_mb: None,
         wall_time_limit_ms: None,
+        webhook_url: None,
     };
     let post_response = server.post("/submissions").json(&request_payload_err).await;
     post_response.assert_status(axum::http::StatusCode::CREATED);
@@ -206,11 +217,41 @@ async fn test_metrics_endpoint() {
     assert!(finished_err, "Err job did not finish");
 
     // 5. Verify metrics count is 2, error rate is 0.5
-    let response = server.get("/metrics").await;
+    let response = server.get("/admin/metrics").await;
     response.assert_status_ok();
     let body = response.json::<serde_json::Value>();
-    assert_eq!(body["count"].as_u64().unwrap(), 2);
-    assert_eq!(body["error_rate"].as_f64().unwrap(), 0.5);
+    assert_eq!(body["submissions"]["count"].as_u64().unwrap(), 2);
+    assert_eq!(body["submissions"]["error_rate"].as_f64().unwrap(), 0.5);
+    assert_eq!(body["status_breakdown"]["compilation_error"].as_u64().unwrap(), 1);
+    assert_eq!(body["languages"]["c"].as_u64().unwrap(), 1);
+
+    // 6. Test authorization for /admin/metrics when API key is set
+    let mut authed_settings = get_test_settings();
+    authed_settings.otter_api_key = Some("admin-secret-key".to_string());
+    let authed_app = build_router(authed_settings);
+    let authed_server = TestServer::new(authed_app).unwrap();
+
+    // 6a. Request without auth -> 401 Unauthorized
+    let response = authed_server.get("/admin/metrics").await;
+    response.assert_status(axum::http::StatusCode::UNAUTHORIZED);
+
+    // 6b. Request with bad auth -> 401 Unauthorized
+    let response = authed_server.get("/admin/metrics")
+        .add_header(
+            axum::http::HeaderName::from_static("authorization"),
+            axum::http::HeaderValue::from_static("Bearer bad-key")
+        )
+        .await;
+    response.assert_status(axum::http::StatusCode::UNAUTHORIZED);
+
+    // 6c. Request with correct auth -> 200 OK
+    let response = authed_server.get("/admin/metrics")
+        .add_header(
+            axum::http::HeaderName::from_static("authorization"),
+            axum::http::HeaderValue::from_static("Bearer admin-secret-key")
+        )
+        .await;
+    response.assert_status_ok();
 }
 
 #[tokio::test]
@@ -227,6 +268,7 @@ async fn test_batch_submissions() {
                 cpu_time_limit_ms: None,
                 memory_limit_mb: None,
                 wall_time_limit_ms: None,
+                webhook_url: None,
             },
             SubmissionRequest {
                 language: "javascript".to_string(),
@@ -235,6 +277,7 @@ async fn test_batch_submissions() {
                 cpu_time_limit_ms: None,
                 memory_limit_mb: None,
                 wall_time_limit_ms: None,
+                webhook_url: None,
             },
         ],
     };
@@ -317,7 +360,8 @@ async fn test_exceeded_limit_validation() {
         cpu_time_limit_ms: Some(6000),
         memory_limit_mb: None,
         wall_time_limit_ms: None,
-    };
+        webhook_url: None,
+};
     
     let response = server.post("/submissions").json(&request_payload).await;
     response.assert_status_bad_request();
@@ -340,7 +384,8 @@ async fn test_queue_capacity_limit() {
         cpu_time_limit_ms: None,
         memory_limit_mb: None,
         wall_time_limit_ms: None,
-    };
+        webhook_url: None,
+};
 
     // Submit 1st -> ok
     let response1 = server.post("/submissions").json(&request_payload).await;
@@ -372,7 +417,8 @@ async fn test_disable_sandbox_mode() {
         cpu_time_limit_ms: None,
         memory_limit_mb: None,
         wall_time_limit_ms: None,
-    };
+        webhook_url: None,
+};
 
     let response = server.post("/submissions").json(&request_payload).await;
     response.assert_status(axum::http::StatusCode::CREATED);
@@ -409,7 +455,8 @@ async fn test_api_key_authentication() {
         cpu_time_limit_ms: None,
         memory_limit_mb: None,
         wall_time_limit_ms: None,
-    };
+        webhook_url: None,
+};
 
     // 1. Request without auth header -> 401 Unauthorized
     let response_no_auth = server.post("/submissions").json(&request_payload).await;
@@ -457,7 +504,8 @@ async fn test_api_key_rate_limiting() {
         cpu_time_limit_ms: None,
         memory_limit_mb: None,
         wall_time_limit_ms: None,
-    };
+        webhook_url: None,
+};
 
     // 1. First request for key-a -> 201 Created
     let response = server.post("/submissions")
@@ -498,4 +546,166 @@ async fn test_api_key_rate_limiting() {
         .json(&request_payload)
         .await;
     response.assert_status(axum::http::StatusCode::CREATED);
+}
+
+#[tokio::test]
+async fn test_list_submissions() {
+    let app = build_router(get_test_settings());
+    let server = TestServer::new(app).unwrap();
+
+    // 1. Submit two jobs
+    let payload1 = SubmissionRequest {
+        language: "python".to_string(),
+        source_code: "print('job 1')".to_string(),
+        stdin: "".to_string(),
+        cpu_time_limit_ms: None,
+        memory_limit_mb: None,
+        wall_time_limit_ms: None,
+        webhook_url: None,
+};
+    let response1 = server.post("/submissions").json(&payload1).await;
+    response1.assert_status(axum::http::StatusCode::CREATED);
+    let token1 = response1.json::<SubmissionResponse>().token;
+
+    let payload2 = SubmissionRequest {
+        language: "python".to_string(),
+        source_code: "print('job 2')".to_string(),
+        stdin: "".to_string(),
+        cpu_time_limit_ms: None,
+        memory_limit_mb: None,
+        wall_time_limit_ms: None,
+        webhook_url: None,
+};
+    let response2 = server.post("/submissions").json(&payload2).await;
+    response2.assert_status(axum::http::StatusCode::CREATED);
+    let token2 = response2.json::<SubmissionResponse>().token;
+
+    // 2. Query list submissions
+    let response = server.get("/submissions").await;
+    response.assert_status_ok();
+    let list = response.json::<Vec<SubmissionResponse>>();
+
+    // Verify both submissions exist in the list
+    let tokens: Vec<String> = list.iter().map(|s| s.token.clone()).collect();
+    assert!(tokens.contains(&token1));
+    assert!(tokens.contains(&token2));
+}
+
+#[tokio::test]
+async fn test_webhook_happy_path() {
+    let received_body = Arc::new(tokio::sync::Mutex::new(None));
+    let received_body_clone = received_body.clone();
+    
+    let mock_app = axum::Router::new().route("/callback", axum::routing::post(move |axum::Json(payload): axum::Json<serde_json::Value>| {
+        let received_body = received_body_clone.clone();
+        async move {
+            let mut guard = received_body.lock().await;
+            *guard = Some(payload);
+            axum::http::StatusCode::OK
+        }
+    }));
+    
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    
+    tokio::spawn(async move {
+        axum::serve(listener, mock_app).await.unwrap();
+    });
+    
+    // 2. Submit a job to Otter specifying this webhook
+    let app = build_router(get_test_settings());
+    let server = TestServer::new(app).unwrap();
+    
+    let webhook_url = format!("http://127.0.0.1:{}/callback", port);
+    let request_payload = SubmissionRequest {
+        language: "python".to_string(),
+        source_code: "print('webhook works!')".to_string(),
+        stdin: "".to_string(),
+        cpu_time_limit_ms: None,
+        memory_limit_mb: None,
+        wall_time_limit_ms: None,
+        webhook_url: Some(webhook_url),
+    };
+    
+    let response = server.post("/submissions").json(&request_payload).await;
+    response.assert_status(axum::http::StatusCode::CREATED);
+    let token = response.json::<SubmissionResponse>().token;
+    
+    // 3. Wait for the webhook to be received
+    let mut received = None;
+    for _ in 0..100 {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let guard = received_body.lock().await;
+        if guard.is_some() {
+            received = guard.clone();
+            break;
+        }
+    }
+    
+    let received = received.expect("Webhook was not received");
+    assert_eq!(received["token"].as_str().unwrap(), token);
+    assert_eq!(received["status"]["id"].as_u64().unwrap(), 3); // Accepted
+    assert_eq!(received["stdout"].as_str().unwrap(), "webhook works!\n");
+}
+
+#[tokio::test]
+async fn test_webhook_ssrf_prevention() {
+    use tokio::net::TcpListener;
+    use tokio::io::AsyncWriteExt;
+
+    // Try to submit with a loopback webhook URL
+    let mut settings = get_test_settings();
+    settings.allow_loopback_webhooks = false;
+    let app = build_router(settings);
+    let server = TestServer::new(app).unwrap();
+    
+    // 127.0.0.1 is in blocklist. The endpoint resolves DNS to 127.0.0.1, detects blocklist, and aborts.
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    
+    let received_flag = Arc::new(tokio::sync::Mutex::new(false));
+    let received_flag_clone = received_flag.clone();
+    
+    tokio::spawn(async move {
+        if let Ok((mut stream, _)) = listener.accept().await {
+            let mut guard = received_flag_clone.lock().await;
+            *guard = true;
+            let _ = stream.write_all(b"HTTP/1.1 200 OK\r\n\r\n").await;
+        }
+    });
+    
+    let webhook_url = format!("http://127.0.0.1:{}/callback", port);
+    let request_payload = SubmissionRequest {
+        language: "python".to_string(),
+        source_code: "print('ssrf check')".to_string(),
+        stdin: "".to_string(),
+        cpu_time_limit_ms: None,
+        memory_limit_mb: None,
+        wall_time_limit_ms: None,
+        webhook_url: Some(webhook_url),
+    };
+    
+    let response = server.post("/submissions").json(&request_payload).await;
+    response.assert_status(axum::http::StatusCode::CREATED);
+    let token = response.json::<SubmissionResponse>().token;
+    
+    // Wait for job to finish processing
+    let mut finished = false;
+    for _ in 0..100 {
+        let res = server.get(&format!("/submissions/{}", token)).await;
+        let poll = res.json::<SubmissionResponse>();
+        if poll.status.id >= 3 {
+            finished = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(finished);
+    
+    // Wait another 200ms to be absolutely sure no webhook was sent
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    
+    // Assert that the listener NEVER accepted a connection (flag remains false)
+    let flag = *received_flag.lock().await;
+    assert!(!flag, "Webhook request was sent to blocklisted IP!");
 }

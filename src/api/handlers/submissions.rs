@@ -72,6 +72,7 @@ pub async fn submit(
         req.stdin,
         limits,
         ip,
+        req.webhook_url,
     )?;
     
     Ok((
@@ -145,6 +146,7 @@ pub async fn submit_batch(
             req.stdin,
             limits,
             ip,
+            req.webhook_url,
         )?;
 
         responses.push(SubmissionResponse {
@@ -174,4 +176,10 @@ pub async fn get_submission(
         .ok_or_else(|| ApiError::NotFound(
             format!("submission '{}' not found", token)
         ))
+}
+
+pub async fn list_submissions(
+    Extension(store): Extension<Arc<SubmissionStore>>,
+) -> Result<Json<Vec<SubmissionResponse>>, ApiError> {
+    Ok(Json(store.get_all()))
 }

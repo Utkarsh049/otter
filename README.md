@@ -100,9 +100,11 @@ curl http://localhost:8080/languages
 | Method | Endpoint | Description |
 |---|---|---|
 | `POST` | `/submissions` | Submit code for execution |
+| `GET` | `/submissions` | List recent submissions history |
 | `GET` | `/submissions/:token` | Poll submission result |
 | `POST` | `/submissions/batch` | Submit multiple at once |
 | `GET` | `/languages` | List supported languages |
+| `GET` | `/admin/metrics` | Secured administrative metrics dashboard |
 | `GET` | `/health` | Health check |
 
 Full API documentation: [`docs/API.md`](docs/API.md)
@@ -135,8 +137,14 @@ All configuration is via environment variables. Copy `.env.example` to `.env` an
 | `WALL_LIMIT_MS` | `10000` | Wall clock limit per submission |
 | `MEMORY_LIMIT_MB` | `128` | Memory limit per submission |
 | `MAX_OUTPUT_BYTES` | `1048576` | Max stdout+stderr size (1MB) |
+| `MAX_QUEUE_DEPTH` | `100` | Maximum queue depth limit |
+| `MAX_CONCURRENT_PER_IP` | `2` | Max concurrent runs allowed per IP address |
+| `OTTER_API_KEY` | unset | Comma-separated list of accepted bearer API keys |
+| `RATE_LIMIT_REQUESTS` | unset | Requests allowed per client within window |
+| `RATE_LIMIT_WINDOW_SECONDS` | unset | Duration of rate limiting window |
+| `ALLOW_LOOPBACK_WEBHOOKS` | `false` | Enable/allow loopback webhooks (for testing) |
 | `RUST_LOG` | `info` | Log level (error/warn/info/debug) |
-| `REDIS_URL` | unset | Redis URL for V2 persistence |
+| `REDIS_URL` | unset | Redis URL for database and queue scaling |
 
 ---
 

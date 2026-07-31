@@ -17,12 +17,16 @@ Create a `.env` file in the root of the project to manage environment variables:
 | `WALL_LIMIT_MS` | Default wall-clock execution time limit per job | `10000` |
 | `MEMORY_LIMIT_MB` | Default memory limit per job | `128` |
 | `MAX_OUTPUT_BYTES` | Cap on stdout/stderr output truncation (in bytes) | `1048576` (1MB) |
+| `MAX_QUEUE_DEPTH` | Maximum queue depth limit | `100` |
+| `MAX_CONCURRENT_PER_IP` | Maximum concurrent sandboxes allowed per IP address | `2` |
+| `OTTER_API_KEY` | Comma-separated list of bearer API tokens | None (Disabled) |
 | `DISABLE_SANDBOX` | Force raw fallback execution without Bubblewrap | `false` (Auto-detected) |
 | `REDIS_URL` | Connection URL for Redis data persistence (V2) | None (Disabled) |
 | `APP_ENV` | Mode of the application (e.g. `production`) | `development` |
 | `LOG_FORMAT` | Format of tracing outputs (e.g. `json`) | `text` |
-| `RATE_LIMIT_REQUESTS` | Allowed requests per window | None (Disabled) |
-| `RATE_LIMIT_WINDOW_SECONDS` | Duration of the rate limit window | None (Disabled) |
+| `RATE_LIMIT_REQUESTS` | Allowed requests per client within rate limit window | None (Disabled) |
+| `RATE_LIMIT_WINDOW_SECONDS` | Duration of the rate limit window in seconds | None (Disabled) |
+| `ALLOW_LOOPBACK_WEBHOOKS` | Enable/allow loopback webhooks (for testing) | `false` |
 
 > [!NOTE]
 > **Reverse Proxies & Load Balancers**: When deployed behind a load balancer or reverse proxy (e.g. on Heroku, Render, Railway, or Cloudflare), the built-in rate limiter automatically parses the `X-Forwarded-For` and `X-Real-IP` headers to extract the true client IP address.

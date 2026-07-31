@@ -32,9 +32,12 @@ Before code enters the execution sandbox, requests pass through an application-l
                        [ User Submission ]
 ```
 
-### Application-Level Concurrency Control
-* **Request Throttling**: The application-level Tokio concurrency cap (enforced by the `MAX_CONCURRENT` semaphore) limits the number of active sandboxes running concurrently.
-* **Scope**: This is an application scheduling concern and is omitted from the kernel security layers as it operates at the API request queue layer before process creation.
+### Application-Level Concurrency Control & Rate Limiting
+* **Single-Tenant Starvation Defense**: In addition to the global concurrency limit (`MAX_CONCURRENT`), Otter enforces a per-IP fair-share scheduling cap (`MAX_CONCURRENT_PER_IP`). This prevents a single malicious or high-traffic tenant from hogging all execution slots and starving other users.
+* **API-Key Rate Limiting**: Requests are rate-limited at the API gateway layer per API key (or client IP fallback) using a sliding-window rate limiter, mitigating automated API denial-of-service (DoS) attempts.
+
+### CPU Core Pinning & Fairness
+* **Core Isolation**: To prevent high-CPU submissions from starving other sandboxes, Otter pins each execution slot to a specific CPU core using `sched_setaffinity` round-robin slot allocation. Processes are also run with increased priority niceness, preventing resource starvation on the host machine.
 
 ---
 
@@ -52,7 +55,7 @@ Bubblewrap (`bwrap`) is used to isolate the filesystem and network namespaces of
 To prevent Denial of Service (DoS) and host exhaustion attacks, we apply strict resource limits (`setrlimit`) to the process tree:
 * `RLIMIT_CPU`: Soft and hard limits on maximum CPU time in seconds. If exceeded, the kernel immediately terminates the process with `SIGXCPU`.
 * `RLIMIT_AS` / `RLIMIT_DATA`: Restricts virtual memory space allocations. Prevents memory exhaustion attacks (e.g. infinite allocation bombs).
-* `RLIMIT_NPROC`: Limits thread and process creation to prevent fork bombs.
+* `RLIMIT_NPROC`: Limits process creation to prevent fork bombs. Enforced via a unique per-run configuration to avoid global starvation.
 * `RLIMIT_FSIZE`: Restricts maximum file size write operations to prevent disk-filling attacks.
 * `RLIMIT_NOFILE`: Capped file descriptor handles (128 max) to prevent file descriptor leaks.
 
@@ -64,7 +67,20 @@ We compile and load seccomp-bpf filters dynamically using `libseccomp` before sp
 
 ---
 
-## 3. Initialization & Containment Sequence
+## 3. Webhook SSRF Protections
+Otter supports outbound webhook callbacks to notify user servers when submissions complete. Because users supply the callback URLs, this presents a Server-Side Request Forgery (SSRF) risk. 
+To prevent attacks against internal APIs or local loopback interfaces, Otter implements:
+* **Strict DNS Resolution Resolution**: Otter resolves the hostname using `tokio::net::lookup_host` before dispatching the request.
+* **IP Blocklist Filtering**: Resolved IP addresses are checked against an exhaustive blocklist covering:
+  * IPv4 loopback (`127.0.0.0/8`) and IPv6 loopback (`::1/128`)
+  * IPv4/IPv6 private subnets (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, `fc00::/7`)
+  * Link-local addresses (`169.254.0.0/16`, `fe80::/10`)
+  * Unspecified, multicast, and broadcast ranges.
+If any resolved IP is blocklisted, the webhook is immediately aborted.
+
+---
+
+## 4. Initialization & Containment Sequence
 
 > [!NOTE]
 > **Setup vs. Containment Order**: The layer diagram illustrates the containment hierarchy (the host kernel contains the bubblewrap sandbox, which bounds Unix rlimits, which bounds the seccomp syscall filters).
@@ -75,7 +91,7 @@ We compile and load seccomp-bpf filters dynamically using `libseccomp` before sp
 
 ---
 
-## 4. Threat Matrix & Mitigation Strategies
+## 5. Threat Matrix & Mitigation Strategies
 
 | Threat Actor | Threat Vector | Target | Containment Strategy |
 | :--- | :--- | :--- | :--- |
@@ -85,3 +101,4 @@ We compile and load seccomp-bpf filters dynamically using `libseccomp` before sp
 | **Malicious Submission** | File System Escape (`read("/etc/passwd")`) | Information Disclosure | Blocked because `/etc` is not mounted. System bindings are strictly read-only. |
 | **Malicious Submission** | Memory Bomb (`a = []`) | Host Memory Exhaustion | Enforced via `RLIMIT_AS` for C/C++/Python virtual memory. For JavaScript, a polling monitor checks peak physical memory RSS (`VmHWM` in `/proc/<pid>/status`) to trigger `Memory Limit Exceeded` (MLE) to prevent Node's V8 engine initialization crashes. |
 | **Malicious Submission** | CPU Bomb (`while(1) {}`) | Host CPU Starvation | Terminated via `RLIMIT_CPU` and a parent Tokio timeout monitor sending `SIGKILL` to the process group. |
+| **Outbound Webhook** | Server-Side Request Forgery | Internal Private Subnets / Metadata URLs | Webhook resolved IPs are parsed and validated against loopback, private IP ranges, and multicast blocklists before dispatch. |

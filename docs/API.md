@@ -84,6 +84,7 @@ Creates a single code execution task. The execution runs asynchronously in the b
   * `cpu_time_limit_ms` (integer, optional): CPU execution cap. Defaults to server setting.
   * `memory_limit_mb` (integer, optional): Peak memory boundary. Defaults to server setting.
   * `wall_time_limit_ms` (integer, optional): Total wall-clock execution limit.
+  * `webhook_url` (string, optional): HTTP/HTTPS endpoint to receive execution results asynchronously. SSRF protection is enforced.
 
 * **Request Body**:
 ```json
@@ -93,7 +94,8 @@ Creates a single code execution task. The execution runs asynchronously in the b
   "stdin": "Otter",
   "cpu_time_limit_ms": 1000,
   "memory_limit_mb": 64,
-  "wall_time_limit_ms": 2000
+  "wall_time_limit_ms": 2000,
+  "webhook_url": "https://yourserver.com/callback"
 }
 ```
 
@@ -122,6 +124,38 @@ curl -X POST http://localhost:8080/submissions \
     "language": "python",
     "source_code": "print(\"hello\")"
   }'
+```
+
+---
+
+## 3b. List Submissions History
+Returns a list of all active or recently executed submissions stored in the system.
+
+* **URL**: `/submissions`
+* **Method**: `GET`
+* **Response Status**: `200 OK`
+* **Response Body**:
+```json
+[
+  {
+    "token": "79b32e60-84cf-4d92-8086-5386db49f9be",
+    "status": {
+      "id": 3,
+      "description": "Accepted"
+    },
+    "stdout": "Hello Otter!\n",
+    "stderr": "",
+    "compile_output": "",
+    "time_ms": 52,
+    "memory_kb": 8120,
+    "exit_code": 0
+  }
+]
+```
+
+* **Example Request**:
+```bash
+curl -X GET http://localhost:8080/submissions
 ```
 
 ---
@@ -229,24 +263,43 @@ curl -X POST http://localhost:8080/submissions/batch \
 
 ---
 
-## 6. Observability Metrics
-Returns the engine's dynamic run statistics.
+## 6. Secured Observability Metrics
+Returns the engine's dynamic run statistics, queue status, language usage, and run breakdowns.
 
-* **URL**: `/metrics`
+* **URL**: `/admin/metrics`
 * **Method**: `GET`
-* **Response Status**: `200 OK`
+* **Response Status**: `200 OK` (requires authorization bearer token if API key is configured)
 * **Response Body**:
 ```json
 {
-  "count": 42,
-  "error_rate": 0.0476,
-  "avg_latency": 128.5
+  "submissions": {
+    "count": 150,
+    "error_rate": 0.12,
+    "avg_latency_ms": 115.4
+  },
+  "status_breakdown": {
+    "accepted": 132,
+    "compilation_error": 8,
+    "time_limit_exceeded": 4,
+    "memory_limit_exceeded": 3,
+    "runtime_error": 3
+  },
+  "languages": {
+    "python": 75,
+    "javascript": 50,
+    "c": 15,
+    "cpp": 10
+  },
+  "queue": {
+    "depth": 2,
+    "in_flight": 4
+  }
 }
 ```
 
 * **Example Request**:
 ```bash
-curl -X GET http://localhost:8080/metrics
+curl -X GET http://localhost:8080/admin/metrics -H "Authorization: Bearer <your-key>"
 ```
 
 ---

@@ -158,7 +158,7 @@ pub async fn api_key_auth_middleware(
 
 pub fn build_router(settings: Settings) -> Router {
     let registry = Arc::new(LanguageRegistry::build());
-    let store    = Arc::new(SubmissionStore::new());
+    let store    = Arc::new(SubmissionStore::new(settings.redis_url.clone()));
     let worker   = Arc::new(Worker::new(&settings, store.clone(), registry.clone()));
     build_router_with_components(settings, registry, store, worker)
 }
@@ -172,10 +172,10 @@ pub fn build_router_with_components(
     let mut router = Router::new()
         .route("/health",             get(health::health))
         .route("/languages",          get(languages::list_languages))
-        .route("/submissions",        post(submissions::submit))
+        .route("/submissions",        get(submissions::list_submissions).post(submissions::submit))
         .route("/submissions/:token", get(submissions::get_submission))
         .route("/submissions/batch",   post(submissions::submit_batch))
-        .route("/metrics",             get(super::handlers::metrics::get_metrics));
+        .route("/admin/metrics",       get(super::handlers::metrics::get_metrics));
 
     if let (Some(requests), Some(window_secs)) = (settings.rate_limit_requests, settings.rate_limit_window_seconds) {
         let limiter = Arc::new(RateLimiter::new(requests, window_secs));
