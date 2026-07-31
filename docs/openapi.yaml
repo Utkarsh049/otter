@@ -38,10 +38,10 @@ paths:
                 type: array
                 items:
                   $ref: '#/components/schemas/LanguageInfo'
-  /submissions:
+  /admin/submissions:
     get:
-      summary: List recent submissions
-      description: Returns a list of all active or recently executed submissions.
+      summary: List recent submissions (administrative)
+      description: Returns a list of all active or recently executed submissions. Requires API key authentication.
       responses:
         '200':
           description: A list of submissions
@@ -51,6 +51,9 @@ paths:
                 type: array
                 items:
                   $ref: '#/components/schemas/SubmissionResponse'
+        '401':
+          description: Unauthorized
+  /submissions:
     post:
       summary: Submit code for execution
       description: Enqueues a code execution job inside the bubblewrap sandbox and returns immediately.

@@ -562,7 +562,7 @@ async fn test_list_submissions() {
         memory_limit_mb: None,
         wall_time_limit_ms: None,
         webhook_url: None,
-};
+    };
     let response1 = server.post("/submissions").json(&payload1).await;
     response1.assert_status(axum::http::StatusCode::CREATED);
     let token1 = response1.json::<SubmissionResponse>().token;
@@ -575,13 +575,13 @@ async fn test_list_submissions() {
         memory_limit_mb: None,
         wall_time_limit_ms: None,
         webhook_url: None,
-};
+    };
     let response2 = server.post("/submissions").json(&payload2).await;
     response2.assert_status(axum::http::StatusCode::CREATED);
     let token2 = response2.json::<SubmissionResponse>().token;
 
     // 2. Query list submissions
-    let response = server.get("/submissions").await;
+    let response = server.get("/admin/submissions").await;
     response.assert_status_ok();
     let list = response.json::<Vec<SubmissionResponse>>();
 
@@ -589,6 +589,25 @@ async fn test_list_submissions() {
     let tokens: Vec<String> = list.iter().map(|s| s.token.clone()).collect();
     assert!(tokens.contains(&token1));
     assert!(tokens.contains(&token2));
+
+    // 3. Test API key protection
+    let mut authed_settings = get_test_settings();
+    authed_settings.otter_api_key = Some("admin-secret-key".to_string());
+    let authed_app = build_router(authed_settings);
+    let authed_server = TestServer::new(authed_app).unwrap();
+
+    // Request without auth -> 401 Unauthorized
+    let response = authed_server.get("/admin/submissions").await;
+    response.assert_status(axum::http::StatusCode::UNAUTHORIZED);
+
+    // Request with correct auth -> 200 OK
+    let response = authed_server.get("/admin/submissions")
+        .add_header(
+            axum::http::HeaderName::from_static("authorization"),
+            axum::http::HeaderValue::from_static("Bearer admin-secret-key")
+        )
+        .await;
+    response.assert_status_ok();
 }
 
 #[tokio::test]

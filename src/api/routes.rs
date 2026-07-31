@@ -172,9 +172,10 @@ pub fn build_router_with_components(
     let mut router = Router::new()
         .route("/health",             get(health::health))
         .route("/languages",          get(languages::list_languages))
-        .route("/submissions",        get(submissions::list_submissions).post(submissions::submit))
+        .route("/submissions",        post(submissions::submit))
         .route("/submissions/:token", get(submissions::get_submission))
         .route("/submissions/batch",   post(submissions::submit_batch))
+        .route("/admin/submissions",   get(submissions::list_submissions))
         .route("/admin/metrics",       get(super::handlers::metrics::get_metrics));
 
     if let (Some(requests), Some(window_secs)) = (settings.rate_limit_requests, settings.rate_limit_window_seconds) {

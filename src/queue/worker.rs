@@ -418,7 +418,9 @@ impl Worker {
                 crate::api::errors::ApiError::InternalError("Failed to serialize job".to_string())
             })?;
 
-            let _: Result<(), redis::RedisError> = conn.lpush("queue:submissions", json);
+            conn.lpush::<_, _, ()>("queue:submissions", json).map_err(|e| {
+                crate::api::errors::ApiError::InternalError(format!("Failed to enqueue job in Redis: {:?}", e))
+            })?;
             Ok(())
         } else {
             // Existing in-memory logic
