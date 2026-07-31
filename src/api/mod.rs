@@ -2,6 +2,9 @@ pub mod errors;
 pub mod handlers;
 pub mod models;
 pub mod routes;
+pub mod json;
+
+pub use json::Json;
 
 use anyhow::Result;
 use std::net::SocketAddr;

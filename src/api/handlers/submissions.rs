@@ -1,4 +1,5 @@
-use axum::{Extension, Json};
+use axum::Extension;
+use crate::api::Json;
 use axum::extract::{Path, ConnectInfo};
 use axum::http::HeaderMap;
 use std::sync::Arc;
@@ -51,7 +52,7 @@ pub async fn submit(
     })?;
     
     let token = Uuid::new_v4().to_string();
-    store.insert(token.clone(), StatusCode::queued());
+    store.insert(token.clone(), StatusCode::queued()).await;
     
     let limits = Limits {
         cpu_time_ms: req.cpu_time_limit_ms.unwrap_or(settings.cpu_limit_ms),
@@ -73,7 +74,7 @@ pub async fn submit(
         limits,
         ip,
         req.webhook_url,
-    )?;
+    ).await?;
     
     Ok((
         axum::http::StatusCode::CREATED,
@@ -115,7 +116,7 @@ pub async fn submit_batch(
     }
 
     // Check queue capacity for the entire batch
-    if worker.queue_depth() + req_batch.submissions.len() > worker.max_queue_depth() {
+    if worker.queue_depth().await + req_batch.submissions.len() > worker.max_queue_depth() {
         return Err(ApiError::TooManyRequests(
             "server is at capacity, try again shortly".to_string()
         ));
@@ -127,7 +128,7 @@ pub async fn submit_batch(
     for req in req_batch.submissions {
         let lang = registry.get(&req.language).unwrap();
         let token = Uuid::new_v4().to_string();
-        store.insert(token.clone(), StatusCode::queued());
+        store.insert(token.clone(), StatusCode::queued()).await;
         
         let limits = Limits {
             cpu_time_ms: req.cpu_time_limit_ms.unwrap_or(settings.cpu_limit_ms),
@@ -147,7 +148,7 @@ pub async fn submit_batch(
             limits,
             ip,
             req.webhook_url,
-        )?;
+        ).await?;
 
         responses.push(SubmissionResponse {
             token,
@@ -171,7 +172,7 @@ pub async fn get_submission(
     Extension(store): Extension<Arc<SubmissionStore>>,
     Path(token): Path<String>,
 ) -> Result<Json<SubmissionResponse>, ApiError> {
-    store.get(&token)
+    store.get(&token).await
         .map(Json)
         .ok_or_else(|| ApiError::NotFound(
             format!("submission '{}' not found", token)
@@ -181,5 +182,5 @@ pub async fn get_submission(
 pub async fn list_submissions(
     Extension(store): Extension<Arc<SubmissionStore>>,
 ) -> Result<Json<Vec<SubmissionResponse>>, ApiError> {
-    Ok(Json(store.get_all()))
+    Ok(Json(store.get_all().await))
 }

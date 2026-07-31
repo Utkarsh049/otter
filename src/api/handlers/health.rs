@@ -1,4 +1,4 @@
-use axum::Json;
+use crate::api::Json;
 use crate::api::models::response::HealthResponse;
 
 pub async fn health() -> Json<HealthResponse> {

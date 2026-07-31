@@ -1,4 +1,5 @@
-use axum::{Extension, Json};
+use axum::Extension;
+use crate::api::Json;
 use std::sync::Arc;
 use serde::Serialize;
 use crate::store::memory::SubmissionStore;
@@ -46,7 +47,7 @@ pub async fn get_metrics(
     Extension(store): Extension<Arc<SubmissionStore>>,
     Extension(worker): Extension<Arc<Worker>>,
 ) -> Json<MetricsResponse> {
-    let detailed = store.get_detailed_metrics();
+    let detailed = store.get_detailed_metrics().await;
     
     let error_rate = if detailed.completed_count > 0 {
         detailed.error_count as f64 / detailed.completed_count as f64
@@ -80,7 +81,7 @@ pub async fn get_metrics(
             cpp: detailed.lang_cpp,
         },
         queue: QueueMetrics {
-            depth: worker.queue_depth(),
+            depth: worker.queue_depth().await,
             in_flight: worker.in_flight(),
         },
     })
