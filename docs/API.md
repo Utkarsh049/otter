@@ -128,7 +128,7 @@ curl -X POST http://localhost:8080/submissions \
 
 ---
 
-## 3. List Submissions
+## 4. List Submissions
 Returns a list of all active or recently executed submissions.
 
 * **URL**: `/admin/submissions`
@@ -160,7 +160,7 @@ curl -X GET http://localhost:8080/admin/submissions -H "Authorization: Bearer <y
 
 ---
 
-## 4. Get Submission Results
+## 5. Get Submission Results
 Query the status or execution results of a submission using its token.
 
 * **URL**: `/submissions/:token`
@@ -208,7 +208,7 @@ curl -X GET http://localhost:8080/submissions/79b32e60-84cf-4d92-8086-5386db49f9
 
 ---
 
-## 5. Batch Submissions
+## 6. Batch Submissions
 Create multiple code execution tasks in a single request.
 
 * **URL**: `/submissions/batch`
@@ -263,7 +263,7 @@ curl -X POST http://localhost:8080/submissions/batch \
 
 ---
 
-## 6. Secured Observability Metrics
+## 7. Secured Observability Metrics
 Returns the engine's dynamic run statistics, queue status, language usage, and run breakdowns.
 
 * **URL**: `/admin/metrics`
@@ -304,7 +304,7 @@ curl -X GET http://localhost:8080/admin/metrics -H "Authorization: Bearer <your-
 
 ---
 
-## 7. Submission Status Reference
+## 8. Submission Status Reference
 
 | Status ID | Description | Description & Condition |
 | :---: | :--- | :--- |

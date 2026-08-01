@@ -1,9 +1,10 @@
-use axum::Extension;
+use crate::api::errors::ApiError;
 use crate::api::Json;
-use std::sync::Arc;
-use serde::Serialize;
-use crate::store::memory::SubmissionStore;
 use crate::queue::worker::Worker;
+use crate::store::memory::SubmissionStore;
+use axum::Extension;
+use serde::Serialize;
+use std::sync::Arc;
 
 #[derive(Debug, Serialize)]
 pub struct SubmissionsMetrics {
@@ -46,9 +47,14 @@ pub struct MetricsResponse {
 pub async fn get_metrics(
     Extension(store): Extension<Arc<SubmissionStore>>,
     Extension(worker): Extension<Arc<Worker>>,
-) -> Json<MetricsResponse> {
-    let detailed = store.get_detailed_metrics().await;
-    
+) -> Result<Json<MetricsResponse>, ApiError> {
+    let (detailed, depth) = tokio::try_join!(
+        store.get_detailed_metrics(),
+        worker.queue_depth()
+    ).map_err(|e| {
+        ApiError::InternalError(format!("Failed to retrieve metrics: {}", e))
+    })?;
+
     let error_rate = if detailed.completed_count > 0 {
         detailed.error_count as f64 / detailed.completed_count as f64
     } else {
@@ -61,7 +67,7 @@ pub async fn get_metrics(
         0.0
     };
 
-    Json(MetricsResponse {
+    Ok(Json(MetricsResponse {
         submissions: SubmissionsMetrics {
             count: detailed.completed_count,
             error_rate,
@@ -81,8 +87,8 @@ pub async fn get_metrics(
             cpp: detailed.lang_cpp,
         },
         queue: QueueMetrics {
-            depth: worker.queue_depth().await,
+            depth,
             in_flight: worker.in_flight(),
         },
-    })
+    }))
 }

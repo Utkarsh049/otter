@@ -1,6 +1,6 @@
+use crate::api::Json;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use crate::api::Json;
 use serde_json::json;
 
 pub enum ApiError {
@@ -13,8 +13,8 @@ pub enum ApiError {
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         let (status, message) = match self {
-            ApiError::NotFound(m)      => (StatusCode::NOT_FOUND, m),
-            ApiError::BadRequest(m)    => (StatusCode::BAD_REQUEST, m),
+            ApiError::NotFound(m) => (StatusCode::NOT_FOUND, m),
+            ApiError::BadRequest(m) => (StatusCode::BAD_REQUEST, m),
             ApiError::InternalError(m) => (StatusCode::INTERNAL_SERVER_ERROR, m),
             ApiError::TooManyRequests(m) => (StatusCode::TOO_MANY_REQUESTS, m),
         };

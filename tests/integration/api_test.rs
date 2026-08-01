@@ -1,10 +1,10 @@
 use axum_test::TestServer;
+use otter::api::models::request::SubmissionRequest;
+use otter::api::models::response::SubmissionResponse;
 use otter::api::routes::build_router;
 use otter::config::Settings;
-use otter::api::models::response::SubmissionResponse;
-use otter::api::models::request::SubmissionRequest;
-use std::time::Duration;
 use std::sync::Arc;
+use std::time::Duration;
 
 fn get_test_settings() -> Settings {
     Settings {
@@ -18,10 +18,10 @@ fn get_test_settings() -> Settings {
 async fn test_health_endpoint() {
     let app = build_router(get_test_settings());
     let server = TestServer::new(app).unwrap();
-    
+
     let response = server.get("/health").await;
     response.assert_status_ok();
-    
+
     let body = response.json::<serde_json::Value>();
     assert_eq!(body["status"], "ok");
     assert_eq!(body["version"], "0.1.0");
@@ -31,13 +31,13 @@ async fn test_health_endpoint() {
 async fn test_languages_endpoint() {
     let app = build_router(get_test_settings());
     let server = TestServer::new(app).unwrap();
-    
+
     let response = server.get("/languages").await;
     response.assert_status_ok();
-    
+
     let body = response.json::<Vec<serde_json::Value>>();
     assert!(!body.is_empty());
-    
+
     // Ensure all 4 languages are returned
     let ids: Vec<&str> = body.iter().map(|l| l["id"].as_str().unwrap()).collect();
     assert!(ids.contains(&"c"));
@@ -50,7 +50,7 @@ async fn test_languages_endpoint() {
 async fn test_submit_and_poll_happy_path() {
     let app = build_router(get_test_settings());
     let server = TestServer::new(app).unwrap();
-    
+
     let request_payload = SubmissionRequest {
         language: "python".to_string(),
         source_code: "print('hello from integration test')".to_string(),
@@ -59,33 +59,37 @@ async fn test_submit_and_poll_happy_path() {
         memory_limit_mb: None,
         wall_time_limit_ms: None,
         webhook_url: None,
-};
-    
+    };
+
     let post_response = server.post("/submissions").json(&request_payload).await;
     post_response.assert_status(axum::http::StatusCode::CREATED);
-    
+
     let initial_res = post_response.json::<SubmissionResponse>();
     let token = initial_res.token;
     assert_eq!(initial_res.status.id, 1); // Queued
-    
+
     // Poll the status
     let mut finished = false;
     for _ in 0..10 {
         let get_response = server.get(&format!("/submissions/{}", token)).await;
         get_response.assert_status_ok();
-        
+
         let poll_res = get_response.json::<SubmissionResponse>();
-        if poll_res.status.id == 3 { // Accepted
+        if poll_res.status.id == 3 {
+            // Accepted
             assert_eq!(poll_res.stdout.unwrap(), "hello from integration test\n");
             assert_eq!(poll_res.exit_code.unwrap(), 0);
             finished = true;
             break;
         } else if poll_res.status.id > 3 {
-            panic!("Unexpected failed status: {:?}, stdout: {:?}, stderr: {:?}, exit_code: {:?}", poll_res.status, poll_res.stdout, poll_res.stderr, poll_res.exit_code);
+            panic!(
+                "Unexpected failed status: {:?}, stdout: {:?}, stderr: {:?}, exit_code: {:?}",
+                poll_res.status, poll_res.stdout, poll_res.stderr, poll_res.exit_code
+            );
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
-    
+
     assert!(finished, "Submission did not finish in time");
 }
 
@@ -93,7 +97,7 @@ async fn test_submit_and_poll_happy_path() {
 async fn test_unsupported_language() {
     let app = build_router(get_test_settings());
     let server = TestServer::new(app).unwrap();
-    
+
     let request_payload = SubmissionRequest {
         language: "rust".to_string(),
         source_code: "fn main() {}".to_string(),
@@ -102,8 +106,8 @@ async fn test_unsupported_language() {
         memory_limit_mb: None,
         wall_time_limit_ms: None,
         webhook_url: None,
-};
-    
+    };
+
     let post_response = server.post("/submissions").json(&request_payload).await;
     post_response.assert_status_bad_request();
 }
@@ -112,13 +116,13 @@ async fn test_unsupported_language() {
 async fn test_malformed_json() {
     let app = build_router(get_test_settings());
     let server = TestServer::new(app).unwrap();
-    
+
     // Send schema-invalid JSON (language as integer) to trigger JSON parsing failure (400)
     let payload = serde_json::json!({
         "language": 12345,
         "source_code": "print('hello')"
     });
-    
+
     let response = server.post("/submissions").json(&payload).await;
     response.assert_status_bad_request();
 }
@@ -127,7 +131,7 @@ async fn test_malformed_json() {
 async fn test_missing_token() {
     let app = build_router(get_test_settings());
     let server = TestServer::new(app).unwrap();
-    
+
     let response = server.get("/submissions/non_existent_token_123").await;
     response.assert_status_not_found();
 }
@@ -222,7 +226,12 @@ async fn test_metrics_endpoint() {
     let body = response.json::<serde_json::Value>();
     assert_eq!(body["submissions"]["count"].as_u64().unwrap(), 2);
     assert_eq!(body["submissions"]["error_rate"].as_f64().unwrap(), 0.5);
-    assert_eq!(body["status_breakdown"]["compilation_error"].as_u64().unwrap(), 1);
+    assert_eq!(
+        body["status_breakdown"]["compilation_error"]
+            .as_u64()
+            .unwrap(),
+        1
+    );
     assert_eq!(body["languages"]["c"].as_u64().unwrap(), 1);
 
     // 6. Test authorization for /admin/metrics when API key is set
@@ -236,19 +245,21 @@ async fn test_metrics_endpoint() {
     response.assert_status(axum::http::StatusCode::UNAUTHORIZED);
 
     // 6b. Request with bad auth -> 401 Unauthorized
-    let response = authed_server.get("/admin/metrics")
+    let response = authed_server
+        .get("/admin/metrics")
         .add_header(
             axum::http::HeaderName::from_static("authorization"),
-            axum::http::HeaderValue::from_static("Bearer bad-key")
+            axum::http::HeaderValue::from_static("Bearer bad-key"),
         )
         .await;
     response.assert_status(axum::http::StatusCode::UNAUTHORIZED);
 
     // 6c. Request with correct auth -> 200 OK
-    let response = authed_server.get("/admin/metrics")
+    let response = authed_server
+        .get("/admin/metrics")
         .add_header(
             axum::http::HeaderName::from_static("authorization"),
-            axum::http::HeaderValue::from_static("Bearer admin-secret-key")
+            axum::http::HeaderValue::from_static("Bearer admin-secret-key"),
         )
         .await;
     response.assert_status_ok();
@@ -282,7 +293,10 @@ async fn test_batch_submissions() {
         ],
     };
 
-    let post_response = server.post("/submissions/batch").json(&request_payload).await;
+    let post_response = server
+        .post("/submissions/batch")
+        .json(&request_payload)
+        .await;
     post_response.assert_status(axum::http::StatusCode::CREATED);
 
     let batch_res = post_response.json::<otter::api::models::response::BatchSubmissionResponse>();
@@ -317,7 +331,10 @@ async fn test_batch_submissions() {
             finished2 = true;
             break;
         } else if poll.status.id > 3 {
-            panic!("Batch 2 failed with status: {:?}, stdout: {:?}, stderr: {:?}, exit_code: {:?}", poll.status, poll.stdout, poll.stderr, poll.exit_code);
+            panic!(
+                "Batch 2 failed with status: {:?}, stdout: {:?}, stderr: {:?}, exit_code: {:?}",
+                poll.status, poll.stdout, poll.stderr, poll.exit_code
+            );
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
@@ -351,7 +368,7 @@ async fn test_rate_limiting() {
 async fn test_exceeded_limit_validation() {
     let app = build_router(get_test_settings());
     let server = TestServer::new(app).unwrap();
-    
+
     // CPU limit is 5000ms. Try to submit with 6000ms.
     let request_payload = SubmissionRequest {
         language: "python".to_string(),
@@ -361,12 +378,15 @@ async fn test_exceeded_limit_validation() {
         memory_limit_mb: None,
         wall_time_limit_ms: None,
         webhook_url: None,
-};
-    
+    };
+
     let response = server.post("/submissions").json(&request_payload).await;
     response.assert_status_bad_request();
     let body = response.json::<serde_json::Value>();
-    assert!(body["error"].as_str().unwrap().contains("cannot exceed server limit"));
+    assert!(body["error"]
+        .as_str()
+        .unwrap()
+        .contains("cannot exceed server limit"));
 }
 
 #[tokio::test]
@@ -385,7 +405,7 @@ async fn test_queue_capacity_limit() {
         memory_limit_mb: None,
         wall_time_limit_ms: None,
         webhook_url: None,
-};
+    };
 
     // Submit 1st -> ok
     let response1 = server.post("/submissions").json(&request_payload).await;
@@ -399,7 +419,10 @@ async fn test_queue_capacity_limit() {
     let response3 = server.post("/submissions").json(&request_payload).await;
     response3.assert_status(axum::http::StatusCode::TOO_MANY_REQUESTS);
     let body = response3.json::<serde_json::Value>();
-    assert!(body["error"].as_str().unwrap().contains("server is at capacity"));
+    assert!(body["error"]
+        .as_str()
+        .unwrap()
+        .contains("server is at capacity"));
 }
 
 #[tokio::test]
@@ -418,7 +441,7 @@ async fn test_disable_sandbox_mode() {
         memory_limit_mb: None,
         wall_time_limit_ms: None,
         webhook_url: None,
-};
+    };
 
     let response = server.post("/submissions").json(&request_payload).await;
     response.assert_status(axum::http::StatusCode::CREATED);
@@ -430,7 +453,8 @@ async fn test_disable_sandbox_mode() {
         let get_response = server.get(&format!("/submissions/{}", token)).await;
         get_response.assert_status_ok();
         let poll_res = get_response.json::<SubmissionResponse>();
-        if poll_res.status.id == 3 { // Accepted
+        if poll_res.status.id == 3 {
+            // Accepted
             assert_eq!(poll_res.stdout.unwrap(), "running un-jailed raw mode!\n");
             finished = true;
             break;
@@ -456,27 +480,29 @@ async fn test_api_key_authentication() {
         memory_limit_mb: None,
         wall_time_limit_ms: None,
         webhook_url: None,
-};
+    };
 
     // 1. Request without auth header -> 401 Unauthorized
     let response_no_auth = server.post("/submissions").json(&request_payload).await;
     response_no_auth.assert_status(axum::http::StatusCode::UNAUTHORIZED);
 
     // 2. Request with malformed header -> 401 Unauthorized
-    let response_bad_auth = server.post("/submissions")
+    let response_bad_auth = server
+        .post("/submissions")
         .add_header(
             axum::http::HeaderName::from_static("authorization"),
-            axum::http::HeaderValue::from_static("Bearer wrong-key")
+            axum::http::HeaderValue::from_static("Bearer wrong-key"),
         )
         .json(&request_payload)
         .await;
     response_bad_auth.assert_status(axum::http::StatusCode::UNAUTHORIZED);
 
     // 3. Request with valid header -> 201 Created
-    let response_valid_auth = server.post("/submissions")
+    let response_valid_auth = server
+        .post("/submissions")
         .add_header(
             axum::http::HeaderName::from_static("authorization"),
-            axum::http::HeaderValue::from_static("Bearer test-secret-api-key")
+            axum::http::HeaderValue::from_static("Bearer test-secret-api-key"),
         )
         .json(&request_payload)
         .await;
@@ -505,43 +531,47 @@ async fn test_api_key_rate_limiting() {
         memory_limit_mb: None,
         wall_time_limit_ms: None,
         webhook_url: None,
-};
+    };
 
     // 1. First request for key-a -> 201 Created
-    let response = server.post("/submissions")
+    let response = server
+        .post("/submissions")
         .add_header(
             axum::http::HeaderName::from_static("authorization"),
-            axum::http::HeaderValue::from_static("Bearer key-a")
+            axum::http::HeaderValue::from_static("Bearer key-a"),
         )
         .json(&request_payload)
         .await;
     response.assert_status(axum::http::StatusCode::CREATED);
 
     // 2. Second request for key-a -> 201 Created
-    let response = server.post("/submissions")
+    let response = server
+        .post("/submissions")
         .add_header(
             axum::http::HeaderName::from_static("authorization"),
-            axum::http::HeaderValue::from_static("Bearer key-a")
+            axum::http::HeaderValue::from_static("Bearer key-a"),
         )
         .json(&request_payload)
         .await;
     response.assert_status(axum::http::StatusCode::CREATED);
 
     // 3. Third request for key-a -> 429 Too Many Requests
-    let response = server.post("/submissions")
+    let response = server
+        .post("/submissions")
         .add_header(
             axum::http::HeaderName::from_static("authorization"),
-            axum::http::HeaderValue::from_static("Bearer key-a")
+            axum::http::HeaderValue::from_static("Bearer key-a"),
         )
         .json(&request_payload)
         .await;
     response.assert_status(axum::http::StatusCode::TOO_MANY_REQUESTS);
 
     // 4. Request for key-b (from same test client/IP) -> 201 Created
-    let response = server.post("/submissions")
+    let response = server
+        .post("/submissions")
         .add_header(
             axum::http::HeaderName::from_static("authorization"),
-            axum::http::HeaderValue::from_static("Bearer key-b")
+            axum::http::HeaderValue::from_static("Bearer key-b"),
         )
         .json(&request_payload)
         .await;
@@ -601,10 +631,11 @@ async fn test_list_submissions() {
     response.assert_status(axum::http::StatusCode::UNAUTHORIZED);
 
     // Request with correct auth -> 200 OK
-    let response = authed_server.get("/admin/submissions")
+    let response = authed_server
+        .get("/admin/submissions")
         .add_header(
             axum::http::HeaderName::from_static("authorization"),
-            axum::http::HeaderValue::from_static("Bearer admin-secret-key")
+            axum::http::HeaderValue::from_static("Bearer admin-secret-key"),
         )
         .await;
     response.assert_status_ok();
@@ -614,27 +645,30 @@ async fn test_list_submissions() {
 async fn test_webhook_happy_path() {
     let received_body = Arc::new(tokio::sync::Mutex::new(None));
     let received_body_clone = received_body.clone();
-    
-    let mock_app = axum::Router::new().route("/callback", axum::routing::post(move |axum::Json(payload): axum::Json<serde_json::Value>| {
-        let received_body = received_body_clone.clone();
-        async move {
-            let mut guard = received_body.lock().await;
-            *guard = Some(payload);
-            axum::http::StatusCode::OK
-        }
-    }));
-    
+
+    let mock_app = axum::Router::new().route(
+        "/callback",
+        axum::routing::post(move |axum::Json(payload): axum::Json<serde_json::Value>| {
+            let received_body = received_body_clone.clone();
+            async move {
+                let mut guard = received_body.lock().await;
+                *guard = Some(payload);
+                axum::http::StatusCode::OK
+            }
+        }),
+    );
+
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
-    
+
     tokio::spawn(async move {
         axum::serve(listener, mock_app).await.unwrap();
     });
-    
+
     // 2. Submit a job to Otter specifying this webhook
     let app = build_router(get_test_settings());
     let server = TestServer::new(app).unwrap();
-    
+
     let webhook_url = format!("http://127.0.0.1:{}/callback", port);
     let request_payload = SubmissionRequest {
         language: "python".to_string(),
@@ -645,11 +679,11 @@ async fn test_webhook_happy_path() {
         wall_time_limit_ms: None,
         webhook_url: Some(webhook_url),
     };
-    
+
     let response = server.post("/submissions").json(&request_payload).await;
     response.assert_status(axum::http::StatusCode::CREATED);
     let token = response.json::<SubmissionResponse>().token;
-    
+
     // 3. Wait for the webhook to be received
     let mut received = None;
     for _ in 0..100 {
@@ -660,7 +694,7 @@ async fn test_webhook_happy_path() {
             break;
         }
     }
-    
+
     let received = received.expect("Webhook was not received");
     assert_eq!(received["token"].as_str().unwrap(), token);
     assert_eq!(received["status"]["id"].as_u64().unwrap(), 3); // Accepted
@@ -669,22 +703,22 @@ async fn test_webhook_happy_path() {
 
 #[tokio::test]
 async fn test_webhook_ssrf_prevention() {
-    use tokio::net::TcpListener;
     use tokio::io::AsyncWriteExt;
+    use tokio::net::TcpListener;
 
     // Try to submit with a loopback webhook URL
     let mut settings = get_test_settings();
     settings.allow_loopback_webhooks = false;
     let app = build_router(settings);
     let server = TestServer::new(app).unwrap();
-    
+
     // 127.0.0.1 is in blocklist. The endpoint resolves DNS to 127.0.0.1, detects blocklist, and aborts.
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
-    
+
     let received_flag = Arc::new(tokio::sync::Mutex::new(false));
     let received_flag_clone = received_flag.clone();
-    
+
     tokio::spawn(async move {
         if let Ok((mut stream, _)) = listener.accept().await {
             let mut guard = received_flag_clone.lock().await;
@@ -692,7 +726,7 @@ async fn test_webhook_ssrf_prevention() {
             let _ = stream.write_all(b"HTTP/1.1 200 OK\r\n\r\n").await;
         }
     });
-    
+
     let webhook_url = format!("http://127.0.0.1:{}/callback", port);
     let request_payload = SubmissionRequest {
         language: "python".to_string(),
@@ -703,11 +737,11 @@ async fn test_webhook_ssrf_prevention() {
         wall_time_limit_ms: None,
         webhook_url: Some(webhook_url),
     };
-    
+
     let response = server.post("/submissions").json(&request_payload).await;
     response.assert_status(axum::http::StatusCode::CREATED);
     let token = response.json::<SubmissionResponse>().token;
-    
+
     // Wait for job to finish processing
     let mut finished = false;
     for _ in 0..100 {
@@ -720,10 +754,10 @@ async fn test_webhook_ssrf_prevention() {
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
     assert!(finished);
-    
+
     // Wait another 200ms to be absolutely sure no webhook was sent
     tokio::time::sleep(Duration::from_millis(200)).await;
-    
+
     // Assert that the listener NEVER accepted a connection (flag remains false)
     let flag = *received_flag.lock().await;
     assert!(!flag, "Webhook request was sent to blocklisted IP!");
