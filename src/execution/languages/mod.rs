@@ -4,10 +4,10 @@ pub mod javascript;
 pub mod python;
 pub mod registry;
 
-use anyhow::Result;
-use async_trait::async_trait;
 use crate::execution::limits::Limits;
 use crate::execution::result::ExecutionResult;
+use anyhow::Result;
+use async_trait::async_trait;
 
 #[derive(Debug, Clone)]
 pub struct JobContext {
@@ -27,7 +27,11 @@ pub struct CompileOutput {
 
 impl CompileOutput {
     pub fn skipped() -> Self {
-        Self { skipped: true, output: String::new(), success: true }
+        Self {
+            skipped: true,
+            output: String::new(),
+            success: true,
+        }
     }
 }
 
@@ -37,8 +41,12 @@ pub trait Language: Send + Sync {
     fn name(&self) -> &'static str;
     fn version(&self) -> &'static str;
     fn file_extension(&self) -> &'static str;
-    fn needs_compilation(&self) -> bool { false }
-    fn default_limits(&self) -> Limits { Limits::default() }
+    fn needs_compilation(&self) -> bool {
+        false
+    }
+    fn default_limits(&self) -> Limits {
+        Limits::default()
+    }
 
     async fn compile(&self, _ctx: &JobContext) -> Result<CompileOutput> {
         Ok(CompileOutput::skipped())

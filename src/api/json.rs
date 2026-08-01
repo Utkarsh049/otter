@@ -1,10 +1,10 @@
 use axum::{
     body::Body,
+    extract::FromRequest,
     http::{header, Request, Response, StatusCode},
     response::IntoResponse,
-    extract::FromRequest,
 };
-use serde::{Serialize, de::DeserializeOwned};
+use serde::{de::DeserializeOwned, Serialize};
 
 pub struct Json<T>(pub T);
 
@@ -41,10 +41,6 @@ where
 
         json_bytes.push(b'\n');
 
-        (
-            [(header::CONTENT_TYPE, "application/json")],
-            json_bytes,
-        )
-            .into_response()
+        ([(header::CONTENT_TYPE, "application/json")], json_bytes).into_response()
     }
 }

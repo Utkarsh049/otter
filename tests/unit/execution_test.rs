@@ -1,11 +1,11 @@
-use std::sync::Arc;
 use otter::execution::engine::Engine;
 use otter::execution::languages::c::C;
 use otter::execution::languages::cpp::Cpp;
-use otter::execution::languages::python::Python;
 use otter::execution::languages::javascript::JavaScript;
+use otter::execution::languages::python::Python;
 use otter::execution::limits::Limits;
 use otter::execution::result::ExecutionStatus;
+use std::sync::Arc;
 
 #[tokio::test]
 async fn test_c_hello_world() {
@@ -79,9 +79,14 @@ import sys
 data = sys.stdin.read()
 print(f"stdin: {data}")
 "#;
-    let result = Engine::execute(lang, source.to_string(), "foo bar".to_string(), Limits::default())
-        .await
-        .expect("Execution failed");
+    let result = Engine::execute(
+        lang,
+        source.to_string(),
+        "foo bar".to_string(),
+        Limits::default(),
+    )
+    .await
+    .expect("Execution failed");
 
     assert!(matches!(result.status, ExecutionStatus::Accepted));
     assert_eq!(result.stdout, "stdin: foo bar\n");
@@ -133,9 +138,14 @@ import sys
 data = sys.stdin.read()
 print(f"🚀 {data}")
 "#;
-    let result = Engine::execute(lang, source.to_string(), "Hello 🌎".to_string(), Limits::default())
-        .await
-        .expect("Execution failed");
+    let result = Engine::execute(
+        lang,
+        source.to_string(),
+        "Hello 🌎".to_string(),
+        Limits::default(),
+    )
+    .await
+    .expect("Execution failed");
 
     assert!(matches!(result.status, ExecutionStatus::Accepted));
     assert_eq!(result.stdout, "🚀 Hello 🌎\n");
@@ -155,9 +165,14 @@ int main() {
     return 0;
 }
 "#;
-    let result = Engine::execute(lang, source.to_string(), "c stdin data".to_string(), Limits::default())
-        .await
-        .expect("Execution failed");
+    let result = Engine::execute(
+        lang,
+        source.to_string(),
+        "c stdin data".to_string(),
+        Limits::default(),
+    )
+    .await
+    .expect("Execution failed");
 
     assert!(matches!(result.status, ExecutionStatus::Accepted));
     assert_eq!(result.stdout, "stdin: c stdin data");
@@ -178,9 +193,14 @@ int main() {
     return 0;
 }
 "#;
-    let result = Engine::execute(lang, source.to_string(), "cpp stdin data".to_string(), Limits::default())
-        .await
-        .expect("Execution failed");
+    let result = Engine::execute(
+        lang,
+        source.to_string(),
+        "cpp stdin data".to_string(),
+        Limits::default(),
+    )
+    .await
+    .expect("Execution failed");
 
     assert!(matches!(result.status, ExecutionStatus::Accepted));
     assert_eq!(result.stdout, "stdin: cpp stdin data\n");
@@ -195,9 +215,14 @@ const fs = require('fs');
 const data = fs.readFileSync(0, 'utf-8');
 console.log("stdin: " + data);
 "#;
-    let result = Engine::execute(lang, source.to_string(), "js stdin data".to_string(), Limits::default())
-        .await
-        .expect("Execution failed");
+    let result = Engine::execute(
+        lang,
+        source.to_string(),
+        "js stdin data".to_string(),
+        Limits::default(),
+    )
+    .await
+    .expect("Execution failed");
 
     assert!(matches!(result.status, ExecutionStatus::Accepted));
     assert_eq!(result.stdout, "stdin: js stdin data\n");
@@ -207,7 +232,7 @@ console.log("stdin: " + data);
 #[tokio::test]
 async fn test_stderr_capture() {
     let limits = Limits::default();
-    
+
     // C
     let c_res = Engine::execute(
         Arc::new(C),
@@ -217,10 +242,13 @@ int main() {
     fprintf(stderr, "c error output\n");
     return 0;
 }
-"#.to_string(),
+"#
+        .to_string(),
         String::new(),
         limits.clone(),
-    ).await.unwrap();
+    )
+    .await
+    .unwrap();
     assert_eq!(c_res.stderr, "c error output\n");
 
     // C++
@@ -232,10 +260,13 @@ int main() {
     std::cerr << "cpp error output" << std::endl;
     return 0;
 }
-"#.to_string(),
+"#
+        .to_string(),
         String::new(),
         limits.clone(),
-    ).await.unwrap();
+    )
+    .await
+    .unwrap();
     assert_eq!(cpp_res.stderr, "cpp error output\n");
 
     // Python
@@ -244,10 +275,13 @@ int main() {
         r#"
 import sys
 sys.stderr.write("python error output\n")
-"#.to_string(),
+"#
+        .to_string(),
         String::new(),
         limits.clone(),
-    ).await.unwrap();
+    )
+    .await
+    .unwrap();
     assert_eq!(py_res.stderr, "python error output\n");
 
     // JavaScript
@@ -255,10 +289,13 @@ sys.stderr.write("python error output\n")
         Arc::new(JavaScript),
         r#"
 console.error("js error output");
-"#.to_string(),
+"#
+        .to_string(),
         String::new(),
         limits.clone(),
-    ).await.unwrap();
+    )
+    .await
+    .unwrap();
     assert_eq!(js_res.stderr, "js error output\n");
 }
 
@@ -274,10 +311,13 @@ async fn test_non_zero_exit_codes() {
 int main() {
     exit(42);
 }
-"#.to_string(),
+"#
+        .to_string(),
         String::new(),
         limits.clone(),
-    ).await.unwrap();
+    )
+    .await
+    .unwrap();
     assert_eq!(c_res.status, ExecutionStatus::RuntimeError);
     assert_eq!(c_res.exit_code, 42);
 
@@ -289,10 +329,13 @@ int main() {
 int main() {
     exit(42);
 }
-"#.to_string(),
+"#
+        .to_string(),
         String::new(),
         limits.clone(),
-    ).await.unwrap();
+    )
+    .await
+    .unwrap();
     assert_eq!(cpp_res.status, ExecutionStatus::RuntimeError);
     assert_eq!(cpp_res.exit_code, 42);
 
@@ -302,10 +345,13 @@ int main() {
         r#"
 import sys
 sys.exit(42)
-"#.to_string(),
+"#
+        .to_string(),
         String::new(),
         limits.clone(),
-    ).await.unwrap();
+    )
+    .await
+    .unwrap();
     assert_eq!(py_res.status, ExecutionStatus::RuntimeError);
     assert_eq!(py_res.exit_code, 42);
 
@@ -314,10 +360,13 @@ sys.exit(42)
         Arc::new(JavaScript),
         r#"
 process.exit(42);
-"#.to_string(),
+"#
+        .to_string(),
         String::new(),
         limits.clone(),
-    ).await.unwrap();
+    )
+    .await
+    .unwrap();
     assert_eq!(js_res.status, ExecutionStatus::RuntimeError);
     assert_eq!(js_res.exit_code, 42);
 }
@@ -327,12 +376,9 @@ async fn test_empty_source_cpp_js() {
     let limits = Limits::default();
 
     // C++ Compilation Error
-    let cpp_res = Engine::execute(
-        Arc::new(Cpp),
-        String::new(),
-        String::new(),
-        limits.clone(),
-    ).await.unwrap();
+    let cpp_res = Engine::execute(Arc::new(Cpp), String::new(), String::new(), limits.clone())
+        .await
+        .unwrap();
     assert_eq!(cpp_res.status, ExecutionStatus::CompilationError);
 
     // JS Accepted but empty
@@ -341,7 +387,9 @@ async fn test_empty_source_cpp_js() {
         String::new(),
         String::new(),
         limits.clone(),
-    ).await.unwrap();
+    )
+    .await
+    .unwrap();
     assert_eq!(js_res.status, ExecutionStatus::Accepted);
     assert!(js_res.stdout.is_empty());
     assert_eq!(js_res.exit_code, 0);
@@ -370,7 +418,7 @@ print(len(data))
 #[tokio::test]
 async fn test_unicode_support_additional() {
     let limits = Limits::default();
-    
+
     // JS
     let js_res = Engine::execute(
         Arc::new(JavaScript),
@@ -378,10 +426,13 @@ async fn test_unicode_support_additional() {
 const fs = require('fs');
 const data = fs.readFileSync(0, 'utf-8').trim();
 console.log("🌟 " + data);
-"#.to_string(),
+"#
+        .to_string(),
         "Hello 🌎 Unicode 🚀".to_string(),
         limits.clone(),
-    ).await.unwrap();
+    )
+    .await
+    .unwrap();
     assert_eq!(js_res.status, ExecutionStatus::Accepted);
     assert_eq!(js_res.stdout.trim(), "🌟 Hello 🌎 Unicode 🚀");
 
@@ -398,10 +449,13 @@ int main() {
     }
     return 0;
 }
-"#.to_string(),
+"#
+        .to_string(),
         "Hello 🌎 Unicode 🚀".to_string(),
         limits.clone(),
-    ).await.unwrap();
+    )
+    .await
+    .unwrap();
     assert_eq!(cpp_res.status, ExecutionStatus::Accepted);
     assert_eq!(cpp_res.stdout.trim(), "🌟 Hello 🌎 Unicode 🚀");
 }
@@ -422,4 +476,3 @@ int main() {
     assert!(matches!(result.status, ExecutionStatus::CompilationError));
     assert!(!result.compile_output.is_empty());
 }
-

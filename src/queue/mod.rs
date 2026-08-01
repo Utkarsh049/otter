@@ -1,2 +1,2 @@
-pub mod worker;
 pub mod slot;
+pub mod worker;

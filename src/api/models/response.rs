@@ -1,5 +1,5 @@
-use serde::{Serialize, Deserialize};
 use super::status::StatusCode;
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SubmissionResponse {

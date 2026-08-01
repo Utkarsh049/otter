@@ -3,28 +3,27 @@ use anyhow::Result;
 #[tokio::main]
 async fn main() -> Result<()> {
     dotenvy::dotenv().ok();
-    
+
     // Maximize soft process limit (RLIMIT_NPROC) up to the hard OS limit at startup
-    if let Ok((_soft, hard)) = nix::sys::resource::getrlimit(nix::sys::resource::Resource::RLIMIT_NPROC) {
-        let _ = nix::sys::resource::setrlimit(nix::sys::resource::Resource::RLIMIT_NPROC, hard, hard);
+    if let Ok((_soft, hard)) =
+        nix::sys::resource::getrlimit(nix::sys::resource::Resource::RLIMIT_NPROC)
+    {
+        let _ =
+            nix::sys::resource::setrlimit(nix::sys::resource::Resource::RLIMIT_NPROC, hard, hard);
     }
-    
+
     let env_log_format = std::env::var("LOG_FORMAT").unwrap_or_default();
-    let is_production = std::env::var("APP_ENV").unwrap_or_default() == "production" 
-        || env_log_format == "json";
+    let is_production =
+        std::env::var("APP_ENV").unwrap_or_default() == "production" || env_log_format == "json";
 
     if is_production {
         tracing_subscriber::fmt()
             .json()
-            .with_env_filter(
-                std::env::var("RUST_LOG").unwrap_or("info".into())
-            )
+            .with_env_filter(std::env::var("RUST_LOG").unwrap_or("info".into()))
             .init();
     } else {
         tracing_subscriber::fmt()
-            .with_env_filter(
-                std::env::var("RUST_LOG").unwrap_or("info".into())
-            )
+            .with_env_filter(std::env::var("RUST_LOG").unwrap_or("info".into()))
             .init();
     }
 
