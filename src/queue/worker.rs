@@ -31,6 +31,11 @@ pub struct QueuedJob {
     pub ip: IpAddr,
     pub webhook_url: Option<String>,
 }
+#[derive(Debug)]
+pub enum EnqueueError {
+    DefinitivelyNotEnqueued(crate::api::errors::ApiError),
+    Indeterminate(crate::api::errors::ApiError),
+}
 
 pub struct Worker {
     semaphore: Arc<Semaphore>,
@@ -208,10 +213,19 @@ impl Worker {
 
                 tokio::spawn(async move {
                     loop {
-                        let mut conn = match client.get_multiplexed_tokio_connection().await {
-                            Ok(c) => c,
-                            Err(e) => {
+                        let conn_res = tokio::time::timeout(Duration::from_secs(2), async {
+                            client.get_multiplexed_tokio_connection().await
+                        }).await;
+
+                        let mut conn = match conn_res {
+                            Ok(Ok(c)) => c,
+                            Ok(Err(e)) => {
                                 tracing::error!("Worker failed to connect to Redis, retrying in 2s: {:?}", e);
+                                tokio::time::sleep(Duration::from_secs(2)).await;
+                                continue;
+                            }
+                            Err(_) => {
+                                tracing::error!("Worker failed to connect to Redis due to timeout, retrying in 2s");
                                 tokio::time::sleep(Duration::from_secs(2)).await;
                                 continue;
                             }
@@ -557,6 +571,33 @@ impl Worker {
         self.max_queue_depth
     }
 
+    async fn check_if_enqueued(&self, token: &str) -> Result<bool, redis::RedisError> {
+        let conn = match self.get_conn().await {
+            Some(c) => c,
+            None => return Err(redis::RedisError::from((redis::ErrorKind::IoError, "Failed to get Redis connection for reconciliation"))),
+        };
+        let mut conn = conn.clone();
+        
+        let check_res = tokio::time::timeout(Duration::from_secs(2), async {
+            use redis::AsyncCommands;
+            let queue: Vec<String> = conn.lrange("queue:submissions", 0, -1).await?;
+            for item in queue {
+                if let Ok(job) = serde_json::from_str::<QueuedJob>(&item) {
+                    if job.token == token {
+                        return Ok(true);
+                    }
+                }
+            }
+            Ok(false)
+        }).await;
+
+        match check_res {
+            Ok(Ok(val)) => Ok(val),
+            Ok(Err(e)) => Err(e),
+            Err(_) => Err(redis::RedisError::from((redis::ErrorKind::IoError, "Reconciliation query timed out"))),
+        }
+    }
+
     pub async fn enqueue(
         &self,
         token: String,
@@ -566,17 +607,22 @@ impl Worker {
         limits: Limits,
         ip: IpAddr,
         webhook_url: Option<String>,
-    ) -> Result<(), crate::api::errors::ApiError> {
+    ) -> Result<(), EnqueueError> {
         if self.redis_client.is_some() {
-            let conn = self.get_conn().await.ok_or_else(|| {
-                crate::api::errors::ApiError::InternalError(
-                    "Failed to connect to Redis".to_string(),
-                )
-            })?;
+            let conn = match self.get_conn().await {
+                Some(c) => c,
+                None => {
+                    return Err(EnqueueError::DefinitivelyNotEnqueued(
+                        crate::api::errors::ApiError::InternalError(
+                            "Failed to connect to Redis".to_string(),
+                        )
+                    ));
+                }
+            };
             let mut conn = conn.clone();
 
             let job = QueuedJob {
-                token,
+                token: token.clone(),
                 language_id,
                 source_code,
                 stdin,
@@ -586,15 +632,24 @@ impl Worker {
             };
 
             let json_str = serde_json::to_string(&job).map_err(|e| {
-                crate::api::errors::ApiError::InternalError(format!("Failed to serialize job: {}", e))
+                EnqueueError::DefinitivelyNotEnqueued(
+                    crate::api::errors::ApiError::InternalError(format!("Failed to serialize job: {}", e))
+                )
             })?;
 
             let script = redis::Script::new(r#"
+                local queue = redis.call('LRANGE', KEYS[1], 0, -1)
+                for _, v in ipairs(queue) do
+                    local decoded = cjson.decode(v)
+                    if decoded and decoded.token == ARGV[2] then
+                        return 1
+                    end
+                end
                 local len = redis.call('LLEN', KEYS[1])
                 if len >= tonumber(ARGV[1]) then
                     return 0
                 else
-                    redis.call('LPUSH', KEYS[1], ARGV[2])
+                    redis.call('LPUSH', KEYS[1], ARGV[3])
                     return 1
                 end
             "#);
@@ -602,6 +657,7 @@ impl Worker {
             let res_result = tokio::time::timeout(Duration::from_secs(2), async {
                 script.key("queue:submissions")
                     .arg(self.max_queue_depth)
+                    .arg(&token)
                     .arg(&json_str)
                     .invoke_async(&mut conn)
                     .await
@@ -611,21 +667,51 @@ impl Worker {
                 Ok(Ok(val)) => val,
                 Ok(Err(e)) => {
                     self.invalidate_conn().await;
-                    return Err(crate::api::errors::ApiError::InternalError(
-                        format!("Redis execution error: {}", e),
-                    ));
+                    match self.check_if_enqueued(&token).await {
+                        Ok(true) => 1,
+                        Ok(false) => {
+                            return Err(EnqueueError::DefinitivelyNotEnqueued(
+                                crate::api::errors::ApiError::InternalError(
+                                    format!("Redis execution error: {}", e),
+                                )
+                            ));
+                        }
+                        Err(rec_err) => {
+                            return Err(EnqueueError::Indeterminate(
+                                crate::api::errors::ApiError::InternalError(
+                                    format!("Redis execution error: {} (Reconciliation failed: {})", e, rec_err),
+                                )
+                            ));
+                        }
+                    }
                 }
                 Err(_) => {
                     self.invalidate_conn().await;
-                    return Err(crate::api::errors::ApiError::InternalError(
-                        "Redis timeout during enqueue".to_string(),
-                    ));
+                    match self.check_if_enqueued(&token).await {
+                        Ok(true) => 1,
+                        Ok(false) => {
+                            return Err(EnqueueError::DefinitivelyNotEnqueued(
+                                crate::api::errors::ApiError::InternalError(
+                                    "Redis timeout during enqueue".to_string(),
+                                )
+                            ));
+                        }
+                        Err(rec_err) => {
+                            return Err(EnqueueError::Indeterminate(
+                                crate::api::errors::ApiError::InternalError(
+                                    format!("Redis timeout during enqueue (Reconciliation failed: {})", rec_err),
+                                )
+                            ));
+                        }
+                    }
                 }
             };
 
             if res == 0 {
-                return Err(crate::api::errors::ApiError::TooManyRequests(
-                    "server is at capacity, try again shortly".to_string(),
+                return Err(EnqueueError::DefinitivelyNotEnqueued(
+                    crate::api::errors::ApiError::TooManyRequests(
+                        "server is at capacity, try again shortly".to_string(),
+                    )
                 ));
             }
 
@@ -634,8 +720,10 @@ impl Worker {
             // Existing in-memory logic
             let current = self.queue_depth.load(Ordering::Relaxed);
             if current >= self.max_queue_depth {
-                return Err(crate::api::errors::ApiError::TooManyRequests(
-                    "server is at capacity, try again shortly".to_string(),
+                return Err(EnqueueError::DefinitivelyNotEnqueued(
+                    crate::api::errors::ApiError::TooManyRequests(
+                        "server is at capacity, try again shortly".to_string(),
+                    )
                 ));
             }
 

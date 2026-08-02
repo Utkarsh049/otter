@@ -276,6 +276,15 @@ mod tests {
             .await;
         assert_eq!(res.status_code(), axum::http::StatusCode::OK);
 
+        // Check non-admin /languages route accepts admin_key when both exist
+        let res = server.get("/languages")
+            .add_header(
+                axum::http::header::AUTHORIZATION,
+                axum::http::HeaderValue::from_static("Bearer admin_key"),
+            )
+            .await;
+        assert_eq!(res.status_code(), axum::http::StatusCode::OK);
+
         // Check otter_api_key is rejected on /admin/submissions
         let res = server.get("/admin/submissions")
             .add_header(
