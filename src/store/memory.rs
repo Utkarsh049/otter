@@ -558,35 +558,11 @@ impl SubmissionStore {
                 let fetch_res = tokio::time::timeout(Duration::from_secs(2), async {
                     use redis::AsyncCommands;
                     let tokens: Vec<String> = conn.lrange("list:recent_submissions", 0, -1).await?;
-                    let mut keys: Vec<String> =
-                        tokens.iter().map(|t| format!("submission:{}", t)).collect();
-
-                    let mut cursor: u64 = 0;
-                    let mut scan_keys = Vec::new();
-                    loop {
-                        let (new_cursor, batch_keys): (u64, Vec<String>) = redis::cmd("SCAN")
-                            .arg(cursor)
-                            .arg("MATCH")
-                            .arg("submission:*")
-                            .arg("COUNT")
-                            .arg(1000)
-                            .query_async(&mut conn)
-                            .await?;
-                        for k in batch_keys {
-                            if !keys.contains(&k) && !scan_keys.contains(&k) {
-                                scan_keys.push(k);
-                            }
-                        }
-                        cursor = new_cursor;
-                        if cursor == 0 {
-                            break;
-                        }
-                    }
-                    keys.extend(scan_keys);
-
-                    if keys.is_empty() {
+                    if tokens.is_empty() {
                         return Ok(Vec::new());
                     }
+                    let keys: Vec<String> =
+                        tokens.iter().map(|t| format!("submission:{}", t)).collect();
 
                     let json_strs: Vec<Option<String>> = conn.mget(&keys).await?;
 
