@@ -518,8 +518,14 @@ impl SubmissionStore {
 
                 match fetch_res {
                     Ok(Ok(val)) => Ok(val),
-                    Ok(Err(e)) => Err(e),
-                    Err(_) => Err(StorageError::Timeout),
+                    Ok(Err(e)) => {
+                        self.invalidate_conn().await;
+                        Err(e)
+                    }
+                    Err(_) => {
+                        self.invalidate_conn().await;
+                        Err(StorageError::Timeout)
+                    }
                 }
             }
         }
@@ -586,8 +592,14 @@ impl SubmissionStore {
 
                 match fetch_res {
                     Ok(Ok(val)) => Ok(val),
-                    Ok(Err(e)) => Err(e),
-                    Err(_) => Err(StorageError::Timeout),
+                    Ok(Err(e)) => {
+                        self.invalidate_conn().await;
+                        Err(e)
+                    }
+                    Err(_) => {
+                        self.invalidate_conn().await;
+                        Err(StorageError::Timeout)
+                    }
                 }
             }
         }
@@ -666,8 +678,14 @@ impl SubmissionStore {
 
                 match fetch_res {
                     Ok(Ok(val)) => Ok(val),
-                    Ok(Err(e)) => Err(e),
-                    Err(_) => Err(StorageError::Timeout),
+                    Ok(Err(e)) => {
+                        self.invalidate_conn().await;
+                        Err(e)
+                    }
+                    Err(_) => {
+                        self.invalidate_conn().await;
+                        Err(StorageError::Timeout)
+                    }
                 }
             }
         }
