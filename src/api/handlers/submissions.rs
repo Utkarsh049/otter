@@ -55,7 +55,8 @@ pub async fn submit(
 
     let token = Uuid::new_v4().to_string();
     store.insert(token.clone(), StatusCode::queued()).await.map_err(|e| {
-        ApiError::InternalError(format!("Failed to initialize submission: {}", e))
+        tracing::error!("Failed to initialize submission: {}", e);
+        ApiError::InternalError("Failed to initialize submission".to_string())
     })?;
 
     let limits = Limits {
@@ -82,8 +83,21 @@ pub async fn submit(
         )
         .await
     {
-        let _ = store.remove(&token).await;
-        return Err(e);
+        if let Err(remove_err) = store.remove(&token).await {
+            tracing::error!(
+                token = %token,
+                error = %remove_err,
+                "Failed to clean up submission from store after enqueuing failure"
+            );
+        }
+        let mapped_err = match e {
+            ApiError::InternalError(m) => {
+                tracing::error!("Internal error during submission enqueue: {}", m);
+                ApiError::InternalError("Failed to enqueue submission".to_string())
+            }
+            other => other,
+        };
+        return Err(mapped_err);
     }
 
     Ok((
@@ -128,7 +142,8 @@ pub async fn submit_batch(
 
     // Check queue capacity for the entire batch
     let depth = worker.queue_depth().await.map_err(|e| {
-        ApiError::InternalError(format!("Failed to query queue depth: {}", e))
+        tracing::error!("Failed to query queue depth: {}", e);
+        ApiError::InternalError("Failed to query queue depth".to_string())
     })?;
     if depth + req_batch.submissions.len() > worker.max_queue_depth() {
         return Err(ApiError::TooManyRequests(
@@ -143,11 +158,12 @@ pub async fn submit_batch(
         let lang = registry.get(&req.language).unwrap();
         let token = Uuid::new_v4().to_string();
         if let Err(e) = store.insert(token.clone(), StatusCode::queued()).await {
+            tracing::error!("Failed to initialize submission in batch: {}", e);
             responses.push(SubmissionResponse {
                 token,
                 status: StatusCode {
                     id: 8,
-                    description: format!("Storage Error: {}", e),
+                    description: "Failed to initialize submission".to_string(),
                 },
                 stdout: None,
                 stderr: None,
@@ -194,10 +210,19 @@ pub async fn submit_batch(
                 });
             }
             Err(e) => {
-                let _ = store.remove(&token).await;
+                if let Err(remove_err) = store.remove(&token).await {
+                    tracing::error!(
+                        token = %token,
+                        error = %remove_err,
+                        "Failed to clean up submission from store after enqueuing failure in batch"
+                    );
+                }
                 let status_desc = match e {
                     ApiError::TooManyRequests(m) => format!("Rejected: {}", m),
-                    ApiError::InternalError(m) => format!("Internal Error: {}", m),
+                    ApiError::InternalError(m) => {
+                        tracing::error!("Internal error during batch submission enqueue: {}", m);
+                        "Internal Error: Failed to enqueue submission".to_string()
+                    }
                     ApiError::BadRequest(m) => format!("Bad Request: {}", m),
                     ApiError::NotFound(m) => format!("Not Found: {}", m),
                 };
@@ -233,7 +258,10 @@ pub async fn get_submission(
     let opt = store
         .get(&token)
         .await
-        .map_err(|e| ApiError::InternalError(format!("Failed to retrieve submission: {}", e)))?;
+        .map_err(|e| {
+            tracing::error!("Failed to retrieve submission: {}", e);
+            ApiError::InternalError("Failed to retrieve submission".to_string())
+        })?;
 
     opt.map(Json)
         .ok_or_else(|| ApiError::NotFound(format!("submission '{}' not found", token)))
@@ -245,6 +273,9 @@ pub async fn list_submissions(
     let list = store
         .get_all()
         .await
-        .map_err(|e| ApiError::InternalError(format!("Failed to retrieve submissions: {}", e)))?;
+        .map_err(|e| {
+            tracing::error!("Failed to retrieve submissions: {}", e);
+            ApiError::InternalError("Failed to retrieve submissions".to_string())
+        })?;
     Ok(Json(list))
 }
