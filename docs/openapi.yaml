@@ -41,7 +41,7 @@ paths:
   /admin/submissions:
     get:
       summary: List recent submissions (administrative)
-      description: Returns a list of all active or recently executed submissions. Requires API key authentication.
+      description: Returns a list of all active or recently executed submissions. Requires API key authentication. Prefers OTTER_ADMIN_KEY if configured, otherwise falls back to OTTER_API_KEY.
       responses:
         '200':
           description: A list of submissions
@@ -117,7 +117,7 @@ paths:
   /admin/metrics:
     get:
       summary: Secured administrative metrics
-      description: Returns dynamic run statistics, queue status, language usage, and run breakdowns. Requires authentication key.
+      description: Returns dynamic run statistics, queue status, language usage, and run breakdowns. Requires authentication key. Prefers OTTER_ADMIN_KEY if configured, otherwise falls back to OTTER_API_KEY.
       responses:
         '200':
           description: Dynamic runtime metrics

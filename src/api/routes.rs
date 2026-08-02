@@ -251,3 +251,63 @@ pub fn build_router_with_components(
 
     router
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum_test::TestServer;
+
+    #[tokio::test]
+    async fn test_admin_route_authentication() {
+        // Case 1: Both keys exist.
+        // /admin/* accepts otter_admin_key, rejects otter_api_key.
+        let mut settings = Settings::default();
+        settings.otter_api_key = Some("client_key".to_string());
+        settings.otter_admin_key = Some("admin_key".to_string());
+        let app = build_router(settings);
+        let server = TestServer::new(app).unwrap();
+
+        // Check otter_admin_key is accepted on /admin/submissions
+        let res = server.get("/admin/submissions")
+            .add_header(
+                axum::http::header::AUTHORIZATION,
+                axum::http::HeaderValue::from_static("Bearer admin_key"),
+            )
+            .await;
+        assert_eq!(res.status_code(), axum::http::StatusCode::OK);
+
+        // Check otter_api_key is rejected on /admin/submissions
+        let res = server.get("/admin/submissions")
+            .add_header(
+                axum::http::header::AUTHORIZATION,
+                axum::http::HeaderValue::from_static("Bearer client_key"),
+            )
+            .await;
+        assert_eq!(res.status_code(), axum::http::StatusCode::UNAUTHORIZED);
+
+        // Case 2: Falls back to otter_api_key when no admin key exists.
+        let mut settings = Settings::default();
+        settings.otter_api_key = Some("client_key".to_string());
+        settings.otter_admin_key = None;
+        let app = build_router(settings);
+        let server = TestServer::new(app).unwrap();
+
+        let res = server.get("/admin/submissions")
+            .add_header(
+                axum::http::header::AUTHORIZATION,
+                axum::http::HeaderValue::from_static("Bearer client_key"),
+            )
+            .await;
+        assert_eq!(res.status_code(), axum::http::StatusCode::OK);
+
+        // Case 3: Permits anonymous access when neither key is configured.
+        let mut settings = Settings::default();
+        settings.otter_api_key = None;
+        settings.otter_admin_key = None;
+        let app = build_router(settings);
+        let server = TestServer::new(app).unwrap();
+
+        let res = server.get("/admin/submissions").await;
+        assert_eq!(res.status_code(), axum::http::StatusCode::OK);
+    }
+}

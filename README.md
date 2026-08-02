@@ -140,6 +140,7 @@ All configuration is via environment variables. Copy `.env.example` to `.env` an
 | `MAX_QUEUE_DEPTH` | `100` | Maximum queue depth limit |
 | `MAX_CONCURRENT_PER_IP` | `2` | Max concurrent runs allowed per IP address |
 | `OTTER_API_KEY` | unset | Comma-separated list of accepted bearer API keys |
+| `OTTER_ADMIN_KEY` | unset | Dedicated bearer API key for administrative routes under `/admin/*` |
 | `RATE_LIMIT_REQUESTS` | unset | Requests allowed per client within window |
 | `RATE_LIMIT_WINDOW_SECONDS` | unset | Duration of rate limiting window |
 | `ALLOW_LOOPBACK_WEBHOOKS` | `false` | Enable/allow loopback webhooks (for testing) |

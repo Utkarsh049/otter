@@ -268,7 +268,7 @@ Returns the engine's dynamic run statistics, queue status, language usage, and r
 
 * **URL**: `/admin/metrics`
 * **Method**: `GET`
-* **Response Status**: `200 OK` (requires authorization bearer token if API key is configured)
+* **Response Status**: `200 OK` (requires authorization bearer token. For `/admin/*` routes, `OTTER_ADMIN_KEY` is preferred if configured, falling back to `OTTER_API_KEY` otherwise. Non-admin routes continue accepting either configured key.)
 * **Response Body**:
 ```json
 {

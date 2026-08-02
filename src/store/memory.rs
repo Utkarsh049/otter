@@ -122,10 +122,11 @@ impl SubmissionStore {
                 if let Some(ref c) = *guard {
                     return Some(c.clone());
                 }
-                
+
                 let connect_res = tokio::time::timeout(Duration::from_secs(2), async {
                     client.get_multiplexed_tokio_connection().await
-                }).await;
+                })
+                .await;
 
                 match connect_res {
                     Ok(Ok(c)) => {
@@ -169,7 +170,10 @@ impl SubmissionStore {
                 Ok(())
             }
             SubmissionStoreInner::Redis { .. } => {
-                let conn = self.get_redis_conn().await.ok_or(StorageError::ConnectionFailed)?;
+                let conn = self
+                    .get_redis_conn()
+                    .await
+                    .ok_or(StorageError::ConnectionFailed)?;
                 let mut conn = conn.clone();
                 let key = format!("submission:{}", token);
                 let response = SubmissionResponse {
@@ -189,7 +193,8 @@ impl SubmissionStore {
                     let _: () = conn.lpush("list:recent_submissions", token.clone()).await?;
                     let _: () = conn.ltrim("list:recent_submissions", 0, 999).await?;
                     Ok::<(), StorageError>(())
-                }).await;
+                })
+                .await;
 
                 match write_res {
                     Ok(Ok(())) => Ok(()),
@@ -213,7 +218,10 @@ impl SubmissionStore {
                 Ok(())
             }
             SubmissionStoreInner::Redis { .. } => {
-                let conn = self.get_redis_conn().await.ok_or(StorageError::ConnectionFailed)?;
+                let conn = self
+                    .get_redis_conn()
+                    .await
+                    .ok_or(StorageError::ConnectionFailed)?;
                 let mut conn = conn.clone();
                 let key = format!("submission:{}", token);
                 let remove_res = tokio::time::timeout(Duration::from_secs(2), async {
@@ -221,7 +229,8 @@ impl SubmissionStore {
                     let _: () = conn.del(&key).await?;
                     let _: () = conn.lrem("list:recent_submissions", 0, token).await?;
                     Ok::<(), StorageError>(())
-                }).await;
+                })
+                .await;
 
                 match remove_res {
                     Ok(Ok(())) => Ok(()),
@@ -263,10 +272,13 @@ impl SubmissionStore {
                 Ok(())
             }
             SubmissionStoreInner::Redis { .. } => {
-                let conn = self.get_redis_conn().await.ok_or(StorageError::ConnectionFailed)?;
+                let conn = self
+                    .get_redis_conn()
+                    .await
+                    .ok_or(StorageError::ConnectionFailed)?;
                 let mut conn = conn.clone();
                 let key = format!("submission:{}", token);
-                
+
                 let write_res = tokio::time::timeout(Duration::from_secs(2), async {
                     use redis::AsyncCommands;
                     if let Some(json_str) = conn.get::<_, Option<String>>(&key).await? {
@@ -291,7 +303,8 @@ impl SubmissionStore {
                         let _: () = pipe.query_async(&mut conn).await?;
                     }
                     Ok::<(), StorageError>(())
-                }).await;
+                })
+                .await;
 
                 match write_res {
                     Ok(Ok(())) => Ok(()),
@@ -518,8 +531,14 @@ impl SubmissionStore {
 
                 match fetch_res {
                     Ok(Ok(val)) => Ok(val),
-                    Ok(Err(e)) => Err(e),
-                    Err(_) => Err(StorageError::Timeout),
+                    Ok(Err(e)) => {
+                        self.invalidate_conn().await;
+                        Err(e)
+                    }
+                    Err(_) => {
+                        self.invalidate_conn().await;
+                        Err(StorageError::Timeout)
+                    }
                 }
             }
         }
@@ -539,34 +558,11 @@ impl SubmissionStore {
                 let fetch_res = tokio::time::timeout(Duration::from_secs(2), async {
                     use redis::AsyncCommands;
                     let tokens: Vec<String> = conn.lrange("list:recent_submissions", 0, -1).await?;
-                    let mut keys: Vec<String> = tokens.iter().map(|t| format!("submission:{}", t)).collect();
-
-                    let mut cursor: u64 = 0;
-                    let mut scan_keys = Vec::new();
-                    loop {
-                        let (new_cursor, batch_keys): (u64, Vec<String>) = redis::cmd("SCAN")
-                            .arg(cursor)
-                            .arg("MATCH")
-                            .arg("submission:*")
-                            .arg("COUNT")
-                            .arg(1000)
-                            .query_async(&mut conn)
-                            .await?;
-                        for k in batch_keys {
-                            if !keys.contains(&k) && !scan_keys.contains(&k) {
-                                scan_keys.push(k);
-                            }
-                        }
-                        cursor = new_cursor;
-                        if cursor == 0 {
-                            break;
-                        }
-                    }
-                    keys.extend(scan_keys);
-
-                    if keys.is_empty() {
+                    if tokens.is_empty() {
                         return Ok(Vec::new());
                     }
+                    let keys: Vec<String> =
+                        tokens.iter().map(|t| format!("submission:{}", t)).collect();
 
                     let json_strs: Vec<Option<String>> = conn.mget(&keys).await?;
 
@@ -586,8 +582,14 @@ impl SubmissionStore {
 
                 match fetch_res {
                     Ok(Ok(val)) => Ok(val),
-                    Ok(Err(e)) => Err(e),
-                    Err(_) => Err(StorageError::Timeout),
+                    Ok(Err(e)) => {
+                        self.invalidate_conn().await;
+                        Err(e)
+                    }
+                    Err(_) => {
+                        self.invalidate_conn().await;
+                        Err(StorageError::Timeout)
+                    }
                 }
             }
         }
@@ -624,7 +626,10 @@ impl SubmissionStore {
                 lang_cpp: lang_cpp.load(Ordering::Relaxed),
             }),
             SubmissionStoreInner::Redis { .. } => {
-                let conn = self.get_redis_conn().await.ok_or(StorageError::ConnectionFailed)?;
+                let conn = self
+                    .get_redis_conn()
+                    .await
+                    .ok_or(StorageError::ConnectionFailed)?;
                 let mut conn = conn.clone();
                 let keys = vec![
                     "metrics:completed_count",
@@ -643,11 +648,10 @@ impl SubmissionStore {
                 let fetch_res = tokio::time::timeout(Duration::from_secs(2), async {
                     use redis::AsyncCommands;
                     let values: Vec<Option<usize>> = conn.mget(&keys).await?;
-                    
-                    let get_val = |idx: usize| -> usize {
-                        values.get(idx).copied().flatten().unwrap_or(0)
-                    };
-                    
+
+                    let get_val =
+                        |idx: usize| -> usize { values.get(idx).copied().flatten().unwrap_or(0) };
+
                     Ok(DetailedMetrics {
                         completed_count: get_val(0),
                         error_count: get_val(1),
@@ -662,12 +666,19 @@ impl SubmissionStore {
                         lang_c: get_val(10),
                         lang_cpp: get_val(11),
                     })
-                }).await;
+                })
+                .await;
 
                 match fetch_res {
                     Ok(Ok(val)) => Ok(val),
-                    Ok(Err(e)) => Err(e),
-                    Err(_) => Err(StorageError::Timeout),
+                    Ok(Err(e)) => {
+                        self.invalidate_conn().await;
+                        Err(e)
+                    }
+                    Err(_) => {
+                        self.invalidate_conn().await;
+                        Err(StorageError::Timeout)
+                    }
                 }
             }
         }
