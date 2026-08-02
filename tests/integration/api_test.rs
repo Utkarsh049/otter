@@ -234,9 +234,10 @@ async fn test_metrics_endpoint() {
     );
     assert_eq!(body["languages"]["c"].as_u64().unwrap(), 1);
 
-    // 6. Test authorization for /admin/metrics when API key is set
+    // 6. Test authorization for /admin/metrics when both API key and admin key are set
     let mut authed_settings = get_test_settings();
-    authed_settings.otter_api_key = Some("admin-secret-key".to_string());
+    authed_settings.otter_api_key = Some("client-secret-key".to_string());
+    authed_settings.otter_admin_key = Some("admin-secret-key".to_string());
     let authed_app = build_router(authed_settings);
     let authed_server = TestServer::new(authed_app).unwrap();
 
@@ -254,7 +255,17 @@ async fn test_metrics_endpoint() {
         .await;
     response.assert_status(axum::http::StatusCode::UNAUTHORIZED);
 
-    // 6c. Request with correct auth -> 200 OK
+    // 6c. Request with regular client API key -> 401 Unauthorized
+    let response = authed_server
+        .get("/admin/metrics")
+        .add_header(
+            axum::http::HeaderName::from_static("authorization"),
+            axum::http::HeaderValue::from_static("Bearer client-secret-key"),
+        )
+        .await;
+    response.assert_status(axum::http::StatusCode::UNAUTHORIZED);
+
+    // 6d. Request with correct admin key -> 200 OK
     let response = authed_server
         .get("/admin/metrics")
         .add_header(
@@ -620,9 +631,10 @@ async fn test_list_submissions() {
     assert!(tokens.contains(&token1));
     assert!(tokens.contains(&token2));
 
-    // 3. Test API key protection
+    // 3. Test API key protection when both API key and admin key are set
     let mut authed_settings = get_test_settings();
-    authed_settings.otter_api_key = Some("admin-secret-key".to_string());
+    authed_settings.otter_api_key = Some("client-secret-key".to_string());
+    authed_settings.otter_admin_key = Some("admin-secret-key".to_string());
     let authed_app = build_router(authed_settings);
     let authed_server = TestServer::new(authed_app).unwrap();
 
@@ -630,7 +642,17 @@ async fn test_list_submissions() {
     let response = authed_server.get("/admin/submissions").await;
     response.assert_status(axum::http::StatusCode::UNAUTHORIZED);
 
-    // Request with correct auth -> 200 OK
+    // Request with regular client API key -> 401 Unauthorized
+    let response = authed_server
+        .get("/admin/submissions")
+        .add_header(
+            axum::http::HeaderName::from_static("authorization"),
+            axum::http::HeaderValue::from_static("Bearer client-secret-key"),
+        )
+        .await;
+    response.assert_status(axum::http::StatusCode::UNAUTHORIZED);
+
+    // Request with correct admin key -> 200 OK
     let response = authed_server
         .get("/admin/submissions")
         .add_header(
