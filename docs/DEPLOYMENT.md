@@ -20,6 +20,7 @@ Create a `.env` file in the root of the project to manage environment variables:
 | `MAX_QUEUE_DEPTH` | Maximum queue depth limit | `100` |
 | `MAX_CONCURRENT_PER_IP` | Maximum concurrent sandboxes allowed per IP address | `2` |
 | `OTTER_API_KEY` | Comma-separated list of bearer API tokens | None (Disabled) |
+| `OTTER_ADMIN_KEY` | Dedicated bearer API key for administrative routes under `/admin/*` | None (Disabled) |
 | `DISABLE_SANDBOX` | Force raw fallback execution without Bubblewrap | `false` (Auto-detected) |
 | `REDIS_URL` | Connection URL for Redis data persistence (V2) | None (Disabled) |
 | `APP_ENV` | Mode of the application (e.g. `production`) | `development` |
