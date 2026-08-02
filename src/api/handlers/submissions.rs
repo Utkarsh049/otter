@@ -83,14 +83,25 @@ pub async fn submit(
         )
         .await
     {
-        if let Err(remove_err) = store.remove(&token).await {
-            tracing::error!(
-                token = %token,
-                error = %remove_err,
-                "Failed to clean up submission from store after enqueuing failure"
-            );
+        let should_remove = matches!(e, crate::queue::worker::EnqueueError::DefinitivelyNotEnqueued(_));
+        if should_remove {
+            if let Err(remove_err) = store.remove(&token).await {
+                use std::hash::{Hash, Hasher};
+                let mut hasher = std::collections::hash_map::DefaultHasher::new();
+                token.hash(&mut hasher);
+                let token_hash = hasher.finish();
+                tracing::error!(
+                    token_hash = %token_hash,
+                    error = %remove_err,
+                    "Failed to clean up submission from store after enqueuing failure"
+                );
+            }
         }
-        let mapped_err = match e {
+        let api_err = match e {
+            crate::queue::worker::EnqueueError::DefinitivelyNotEnqueued(err) => err,
+            crate::queue::worker::EnqueueError::Indeterminate(err) => err,
+        };
+        let mapped_err = match api_err {
             ApiError::InternalError(m) => {
                 tracing::error!("Internal error during submission enqueue: {}", m);
                 ApiError::InternalError("Failed to enqueue submission".to_string())
@@ -210,14 +221,25 @@ pub async fn submit_batch(
                 });
             }
             Err(e) => {
-                if let Err(remove_err) = store.remove(&token).await {
-                    tracing::error!(
-                        token = %token,
-                        error = %remove_err,
-                        "Failed to clean up submission from store after enqueuing failure in batch"
-                    );
+                let should_remove = matches!(e, crate::queue::worker::EnqueueError::DefinitivelyNotEnqueued(_));
+                if should_remove {
+                    if let Err(remove_err) = store.remove(&token).await {
+                        use std::hash::{Hash, Hasher};
+                        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+                        token.hash(&mut hasher);
+                        let token_hash = hasher.finish();
+                        tracing::error!(
+                            token_hash = %token_hash,
+                            error = %remove_err,
+                            "Failed to clean up submission from store after enqueuing failure in batch"
+                        );
+                    }
                 }
-                let status_desc = match e {
+                let api_err = match e {
+                    crate::queue::worker::EnqueueError::DefinitivelyNotEnqueued(err) => err,
+                    crate::queue::worker::EnqueueError::Indeterminate(err) => err,
+                };
+                let status_desc = match api_err {
                     ApiError::TooManyRequests(m) => format!("Rejected: {}", m),
                     ApiError::InternalError(m) => {
                         tracing::error!("Internal error during batch submission enqueue: {}", m);
