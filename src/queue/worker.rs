@@ -43,6 +43,7 @@ pub struct Worker {
     max_concurrent_per_ip: usize,
     slots: Arc<super::slot::SlotAllocator>,
     redis_client: Option<redis::Client>,
+    conn: tokio::sync::Mutex<Option<redis::aio::MultiplexedConnection>>,
     in_flight: Arc<AtomicUsize>,
     allow_loopback: bool,
 }
@@ -207,7 +208,7 @@ impl Worker {
 
                 tokio::spawn(async move {
                     loop {
-                        let mut conn = match client.get_async_connection().await {
+                        let mut conn = match client.get_multiplexed_tokio_connection().await {
                             Ok(c) => c,
                             Err(e) => {
                                 tracing::error!("Worker failed to connect to Redis, retrying in 2s: {:?}", e);
@@ -479,6 +480,7 @@ impl Worker {
             max_concurrent_per_ip: settings.max_concurrent_per_ip,
             slots: Arc::new(super::slot::SlotAllocator::new(settings.max_concurrent)),
             redis_client,
+            conn: tokio::sync::Mutex::new(None),
             in_flight,
             allow_loopback,
         }
@@ -493,27 +495,58 @@ impl Worker {
         }
     }
 
-    pub async fn queue_depth(&self) -> Result<usize, crate::store::memory::StorageError> {
+    async fn get_conn(&self) -> Option<redis::aio::MultiplexedConnection> {
         if let Some(ref client) = self.redis_client {
-            let conn_res = tokio::time::timeout(Duration::from_secs(2), async {
+            let mut guard = self.conn.lock().await;
+            if let Some(ref c) = *guard {
+                return Some(c.clone());
+            }
+
+            let connect_res = tokio::time::timeout(Duration::from_secs(2), async {
                 client.get_multiplexed_tokio_connection().await
             }).await;
 
-            let mut conn = match conn_res {
-                Ok(Ok(c)) => c,
-                Ok(Err(e)) => return Err(crate::store::memory::StorageError::Redis(e)),
-                Err(_) => return Err(crate::store::memory::StorageError::Timeout),
-            };
+            match connect_res {
+                Ok(Ok(c)) => {
+                    *guard = Some(c.clone());
+                    Some(c)
+                }
+                _ => {
+                    tracing::error!("Worker failed to establish Redis connection within 2s");
+                    None
+                }
+            }
+        } else {
+            None
+        }
+    }
 
-            let query_res = tokio::time::timeout(Duration::from_secs(2), async {
+    async fn invalidate_conn(&self) {
+        let mut guard = self.conn.lock().await;
+        *guard = None;
+        tracing::info!("Worker invalidated stale Redis connection");
+    }
+
+    pub async fn queue_depth(&self) -> Result<usize, crate::store::memory::StorageError> {
+        if self.redis_client.is_some() {
+            let depth_res = tokio::time::timeout(Duration::from_secs(2), async {
+                let conn = self.get_conn().await.ok_or(crate::store::memory::StorageError::ConnectionFailed)?;
+                let mut conn = conn.clone();
                 use redis::AsyncCommands;
-                conn.llen("queue:submissions").await
+                let len: usize = conn.llen("queue:submissions").await.map_err(|e| crate::store::memory::StorageError::Redis(e))?;
+                Ok::<usize, crate::store::memory::StorageError>(len)
             }).await;
 
-            match query_res {
+            match depth_res {
                 Ok(Ok(d)) => Ok(d),
-                Ok(Err(e)) => Err(crate::store::memory::StorageError::Redis(e)),
-                Err(_) => Err(crate::store::memory::StorageError::Timeout),
+                Ok(Err(e)) => {
+                    self.invalidate_conn().await;
+                    Err(e)
+                }
+                Err(_) => {
+                    self.invalidate_conn().await;
+                    Err(crate::store::memory::StorageError::Timeout)
+                }
             }
         } else {
             Ok(self.queue_depth.load(Ordering::Relaxed))
@@ -534,12 +567,13 @@ impl Worker {
         ip: IpAddr,
         webhook_url: Option<String>,
     ) -> Result<(), crate::api::errors::ApiError> {
-        if let Some(ref client) = self.redis_client {
-            let mut conn = client.get_multiplexed_tokio_connection().await.map_err(|_e| {
+        if self.redis_client.is_some() {
+            let conn = self.get_conn().await.ok_or_else(|| {
                 crate::api::errors::ApiError::InternalError(
                     "Failed to connect to Redis".to_string(),
                 )
             })?;
+            let mut conn = conn.clone();
 
             let job = QueuedJob {
                 token,
@@ -565,17 +599,29 @@ impl Worker {
                 end
             "#);
 
-            let res: i32 = tokio::time::timeout(Duration::from_secs(2), async {
+            let res_result = tokio::time::timeout(Duration::from_secs(2), async {
                 script.key("queue:submissions")
                     .arg(self.max_queue_depth)
                     .arg(&json_str)
                     .invoke_async(&mut conn)
                     .await
-            }).await.map_err(|_| {
-                crate::api::errors::ApiError::InternalError("Redis timeout during enqueue".to_string())
-            })?.map_err(|e| {
-                crate::api::errors::ApiError::InternalError(format!("Redis execution error: {}", e))
-            })?;
+            }).await;
+
+            let res: i32 = match res_result {
+                Ok(Ok(val)) => val,
+                Ok(Err(e)) => {
+                    self.invalidate_conn().await;
+                    return Err(crate::api::errors::ApiError::InternalError(
+                        format!("Redis execution error: {}", e),
+                    ));
+                }
+                Err(_) => {
+                    self.invalidate_conn().await;
+                    return Err(crate::api::errors::ApiError::InternalError(
+                        "Redis timeout during enqueue".to_string(),
+                    ));
+                }
+            };
 
             if res == 0 {
                 return Err(crate::api::errors::ApiError::TooManyRequests(
