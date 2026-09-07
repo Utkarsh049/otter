@@ -1,4 +1,5 @@
 use crate::api::errors::ApiError;
+use crate::api::identity::ClientIdentity;
 use crate::api::models::request::{BatchSubmissionRequest, SubmissionRequest};
 use crate::api::models::response::{BatchSubmissionResponse, SubmissionResponse};
 use crate::api::models::status::StatusCode;
@@ -38,6 +39,7 @@ pub async fn submit(
     Extension(registry): Extension<Arc<LanguageRegistry>>,
     Extension(store): Extension<Arc<SubmissionStore>>,
     Extension(worker): Extension<Arc<Worker>>,
+    identity: Option<Extension<ClientIdentity>>,
     headers: HeaderMap,
     connect_info: Option<ConnectInfo<SocketAddr>>,
     payload: Result<Json<SubmissionRequest>, axum::extract::rejection::JsonRejection>,
@@ -69,7 +71,13 @@ pub async fn submit(
         slot_id: None,
     };
 
-    let ip = get_client_ip(&headers, connect_info);
+    let client_identity = match identity {
+        Some(Extension(id)) => id,
+        None => {
+            let ip = get_client_ip(&headers, connect_info);
+            ClientIdentity::Ip { address: ip }
+        }
+    };
 
     if let Err(e) = worker
         .enqueue(
@@ -78,7 +86,7 @@ pub async fn submit(
             req.source_code,
             req.stdin,
             limits,
-            ip,
+            client_identity,
             req.webhook_url,
         )
         .await
@@ -131,6 +139,7 @@ pub async fn submit_batch(
     Extension(registry): Extension<Arc<LanguageRegistry>>,
     Extension(store): Extension<Arc<SubmissionStore>>,
     Extension(worker): Extension<Arc<Worker>>,
+    identity: Option<Extension<ClientIdentity>>,
     headers: HeaderMap,
     connect_info: Option<ConnectInfo<SocketAddr>>,
     payload: Result<Json<BatchSubmissionRequest>, axum::extract::rejection::JsonRejection>,
@@ -163,7 +172,13 @@ pub async fn submit_batch(
     }
 
     let mut responses = Vec::new();
-    let ip = get_client_ip(&headers, connect_info);
+    let client_identity = match identity {
+        Some(Extension(id)) => id,
+        None => {
+            let ip = get_client_ip(&headers, connect_info);
+            ClientIdentity::Ip { address: ip }
+        }
+    };
 
     for req in req_batch.submissions {
         let lang = registry.get(&req.language).unwrap();
@@ -203,7 +218,7 @@ pub async fn submit_batch(
                 req.source_code,
                 req.stdin,
                 limits,
-                ip,
+                client_identity.clone(),
                 req.webhook_url,
             )
             .await

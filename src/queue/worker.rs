@@ -1,3 +1,4 @@
+use crate::api::identity::ClientIdentity;
 use crate::api::models::response::SubmissionResponse;
 use crate::api::models::status::StatusCode;
 use crate::config::Settings;
@@ -29,6 +30,8 @@ pub struct QueuedJob {
     pub stdin: String,
     pub limits: Limits,
     pub ip: IpAddr,
+    #[serde(default)]
+    pub identity_key: Option<String>,
     pub webhook_url: Option<String>,
 }
 #[derive(Debug)]
@@ -44,8 +47,9 @@ pub struct Worker {
     max_concurrent: usize,
     queue_depth: Arc<AtomicUsize>,
     max_queue_depth: usize,
-    user_semaphores: Arc<DashMap<IpAddr, Arc<Semaphore>>>,
+    identity_semaphores: Arc<DashMap<String, Arc<Semaphore>>>,
     max_concurrent_per_ip: usize,
+    max_concurrent_per_user: usize,
     slots: Arc<super::slot::SlotAllocator>,
     redis_client: Option<redis::Client>,
     conn: tokio::sync::Mutex<Option<redis::aio::MultiplexedConnection>>,
@@ -198,8 +202,9 @@ impl Worker {
             let store = store.clone();
             let registry = registry.clone();
             let slots = Arc::new(super::slot::SlotAllocator::new(settings.max_concurrent));
-            let user_semaphores = Arc::new(DashMap::new());
+            let identity_semaphores = Arc::new(DashMap::new());
             let max_concurrent_per_ip = settings.max_concurrent_per_ip;
+            let max_concurrent_per_user = settings.max_concurrent_per_user;
             let in_flight = in_flight.clone();
 
             // Spawn max_concurrent worker loops
@@ -208,7 +213,7 @@ impl Worker {
                 let store = store.clone();
                 let registry = registry.clone();
                 let slots = slots.clone();
-                let user_semaphores = user_semaphores.clone();
+                let identity_semaphores = identity_semaphores.clone();
                 let in_flight = in_flight.clone();
 
                 tokio::spawn(async move {
@@ -245,17 +250,21 @@ impl Worker {
                                     }
                                 };
 
-                                let ip_sem = user_semaphores
-                                    .entry(job.ip)
-                                    .or_insert_with(|| {
-                                        Arc::new(Semaphore::new(max_concurrent_per_ip))
-                                    })
-                                    .value()
-                                    .clone();
+                                let identity_key = job
+                                    .identity_key
+                                    .clone()
+                                    .unwrap_or_else(|| format!("ip:{}", job.ip));
 
-                                let ip_permit = ip_sem.try_acquire();
-                                match ip_permit {
-                                    Ok(_ip_permit) => {
+                                let client_sem = Self::get_identity_semaphore(
+                                    &identity_semaphores,
+                                    &identity_key,
+                                    max_concurrent_per_user,
+                                    max_concurrent_per_ip,
+                                );
+
+                                let client_permit = client_sem.try_acquire();
+                                match client_permit {
+                                    Ok(_client_permit) => {
                                         let _ = store
                                             .update_status(&job.token, StatusCode::processing())
                                             .await;
@@ -490,14 +499,34 @@ impl Worker {
             max_concurrent: settings.max_concurrent,
             queue_depth: Arc::new(AtomicUsize::new(0)),
             max_queue_depth: settings.max_queue_depth,
-            user_semaphores: Arc::new(DashMap::new()),
+            identity_semaphores: Arc::new(DashMap::new()),
             max_concurrent_per_ip: settings.max_concurrent_per_ip,
+            max_concurrent_per_user: settings.max_concurrent_per_user,
             slots: Arc::new(super::slot::SlotAllocator::new(settings.max_concurrent)),
             redis_client,
             conn: tokio::sync::Mutex::new(None),
             in_flight,
             allow_loopback,
         }
+    }
+
+    fn get_identity_semaphore(
+        semaphores: &DashMap<String, Arc<Semaphore>>,
+        key: &str,
+        max_user: usize,
+        max_ip: usize,
+    ) -> Arc<Semaphore> {
+        let capacity = if key.starts_with("user:") || key.starts_with("tenant:") {
+            max_user
+        } else {
+            max_ip
+        };
+
+        semaphores
+            .entry(key.to_string())
+            .or_insert_with(|| Arc::new(Semaphore::new(capacity)))
+            .value()
+            .clone()
     }
 
     pub fn in_flight(&self) -> usize {
@@ -605,7 +634,7 @@ impl Worker {
         source_code: String,
         stdin: String,
         limits: Limits,
-        ip: IpAddr,
+        identity: ClientIdentity,
         webhook_url: Option<String>,
     ) -> Result<(), EnqueueError> {
         if self.redis_client.is_some() {
@@ -621,6 +650,12 @@ impl Worker {
             };
             let mut conn = conn.clone();
 
+            let identity_key = identity.concurrency_key();
+            let ip = match &identity {
+                ClientIdentity::Ip { address } => *address,
+                _ => "127.0.0.1".parse().unwrap(),
+            };
+
             let job = QueuedJob {
                 token: token.clone(),
                 language_id,
@@ -628,6 +663,7 @@ impl Worker {
                 stdin,
                 limits,
                 ip,
+                identity_key: Some(identity_key),
                 webhook_url,
             };
 
@@ -738,12 +774,13 @@ impl Worker {
 
             let slots = self.slots.clone();
 
-            let ip_sem = self
-                .user_semaphores
-                .entry(ip)
-                .or_insert_with(|| Arc::new(Semaphore::new(self.max_concurrent_per_ip)))
-                .value()
-                .clone();
+            let identity_key = identity.concurrency_key();
+            let client_sem = Self::get_identity_semaphore(
+                &self.identity_semaphores,
+                &identity_key,
+                self.max_concurrent_per_user,
+                self.max_concurrent_per_ip,
+            );
 
             let webhook_url_clone = webhook_url.clone();
             let allow_loopback = self.allow_loopback;
@@ -751,11 +788,11 @@ impl Worker {
             tokio::spawn(async move {
                 let _guard = QueueDepthGuard(queue_depth);
 
-                // Acquire IP-specific permit first to avoid global lock contention / HOL blocking
-                let _ip_permit = match ip_sem.acquire().await {
+                // Acquire client-specific permit first to avoid global lock contention / HOL blocking
+                let _client_permit = match client_sem.acquire().await {
                     Ok(p) => p,
                     Err(e) => {
-                        tracing::error!("Failed to acquire IP semaphore permit: {:?}", e);
+                        tracing::error!("Failed to acquire client semaphore permit: {:?}", e);
                         let _ = store
                             .update_status(&token, StatusCode::internal_error())
                             .await;
