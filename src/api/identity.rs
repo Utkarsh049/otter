@@ -103,6 +103,27 @@ pub fn verify_jwt_assertion(
     })
 }
 
+pub fn extract_ip(
+    headers: &axum::http::HeaderMap,
+    connect_info: Option<axum::extract::ConnectInfo<std::net::SocketAddr>>,
+) -> IpAddr {
+    let fallback_ip = connect_info
+        .map(|c| c.0.ip())
+        .unwrap_or_else(|| "127.0.0.1".parse().unwrap());
+    headers
+        .get("x-forwarded-for")
+        .and_then(|h| h.to_str().ok())
+        .and_then(|s| s.split(',').next())
+        .and_then(|s| s.trim().parse::<IpAddr>().ok())
+        .or_else(|| {
+            headers
+                .get("x-real-ip")
+                .and_then(|h| h.to_str().ok())
+                .and_then(|s| s.trim().parse::<IpAddr>().ok())
+        })
+        .unwrap_or(fallback_ip)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
