@@ -1,5 +1,6 @@
 pub mod errors;
 pub mod handlers;
+pub mod identity;
 pub mod json;
 pub mod models;
 pub mod routes;

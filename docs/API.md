@@ -316,3 +316,36 @@ curl -X GET http://localhost:8080/admin/metrics -H "Authorization: Bearer <your-
 | **`6`** | **`Compilation Error`** | Compiler exited with non-zero exit status (compiler output returned in `compile_output`). |
 | **`7`** | **`Runtime Error`** | Terminated by crash, non-zero code, or seccomp violation (`exit_code = 159`). |
 | **`8`** | **`Internal Error`** | Failed to create sandbox folders or execute worker task. |
+
+---
+
+## 9. User Identity & Rate Limiting
+
+Otter supports identity-aware rate limiting and execution fairness so backend services can propagate authenticated user identities rather than sharing a single IP quota.
+
+### Authentication & Assertion Headers
+
+| Header | Description |
+|---|---|
+| `Authorization: Bearer <key>` | Internal service API key (`OTTER_API_KEY` or `OTTER_ADMIN_KEY`). |
+| `X-Otter-User-Assertion: <jwt>` | Signed backend assertion JWT identifying the end-user. Verified using `OTTER_JWT_SECRET`. |
+| `X-Otter-User-Id: <user-id>` | Used in `OTTER_IDENTITY_MODE=trusted_header` when running behind a trusted private reverse proxy. |
+| `X-Otter-Tenant-Id: <tenant-id>` | Optional tenant partition for multi-tenant rate limiting. |
+
+#### JWT Assertion Claims
+When using `X-Otter-User-Assertion`, Otter validates an HMAC-SHA256 JWT containing:
+* `sub` (string, required): Stable user identifier (e.g., `usr_12345`).
+* `exp` (integer, required): Expiration epoch seconds.
+* `iss` (string, optional): Validated against `OTTER_JWT_ISSUER` if configured.
+* `aud` (string, optional): Validated against `OTTER_JWT_AUDIENCE` if configured.
+* `tenant_id` (string, optional): Groups quota under `tenant:<tenant>:user:<sub>`.
+
+### Rate Limiting & Execution Concurrency
+
+When rate limiting (`RATE_LIMIT_REQUESTS` and `RATE_LIMIT_WINDOW_SECONDS`) is enabled:
+* Quotas are enforced against the derived identity (`user:<id>`, `key:<id>`, or `ip:<addr>`).
+* When limits are exceeded, Otter returns `429 Too Many Requests` with the standard header:
+  ```http
+  Retry-After: 42
+  ```
+* Concurrent worker execution limits are enforced per user (`MAX_CONCURRENT_PER_USER`) and globally (`MAX_CONCURRENT`), preventing any individual user from exhausting worker capacity.

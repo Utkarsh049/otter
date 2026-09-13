@@ -17,6 +17,11 @@ pub struct Settings {
     pub rate_limit_window_seconds: Option<u64>,
     pub otter_api_key: Option<String>,
     pub otter_admin_key: Option<String>,
+    pub otter_identity_mode: Option<String>,
+    pub otter_jwt_secret: Option<String>,
+    pub otter_jwt_issuer: Option<String>,
+    pub otter_jwt_audience: Option<String>,
+    pub max_concurrent_per_user: usize,
     pub allow_loopback_webhooks: bool,
 }
 
@@ -38,6 +43,11 @@ impl Default for Settings {
             rate_limit_window_seconds: None,
             otter_api_key: None,
             otter_admin_key: None,
+            otter_identity_mode: None,
+            otter_jwt_secret: None,
+            otter_jwt_issuer: None,
+            otter_jwt_audience: None,
+            max_concurrent_per_user: 2,
             allow_loopback_webhooks: false,
         }
     }
@@ -45,6 +55,15 @@ impl Default for Settings {
 
 impl Settings {
     pub fn from_env() -> Result<Self> {
+        let max_concurrent_per_ip = std::env::var("MAX_CONCURRENT_PER_IP")
+            .unwrap_or("2".into())
+            .parse()
+            .context("MAX_CONCURRENT_PER_IP must be a number")?;
+        let max_concurrent_per_user = std::env::var("MAX_CONCURRENT_PER_USER")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(max_concurrent_per_ip);
+
         Ok(Self {
             host: std::env::var("HOST").unwrap_or("0.0.0.0".into()),
             port: std::env::var("PORT")
@@ -75,10 +94,8 @@ impl Settings {
                 .unwrap_or("100".into())
                 .parse()
                 .context("MAX_QUEUE_DEPTH must be a number")?,
-            max_concurrent_per_ip: std::env::var("MAX_CONCURRENT_PER_IP")
-                .unwrap_or("2".into())
-                .parse()
-                .context("MAX_CONCURRENT_PER_IP must be a number")?,
+            max_concurrent_per_ip,
+            max_concurrent_per_user,
             disable_sandbox: {
                 let disabled = if let Ok(val) = std::env::var("DISABLE_SANDBOX") {
                     val.parse().unwrap_or(false)
@@ -104,6 +121,10 @@ impl Settings {
                 .and_then(|s| s.parse().ok()),
             otter_api_key: std::env::var("OTTER_API_KEY").ok(),
             otter_admin_key: std::env::var("OTTER_ADMIN_KEY").ok(),
+            otter_identity_mode: std::env::var("OTTER_IDENTITY_MODE").ok(),
+            otter_jwt_secret: std::env::var("OTTER_JWT_SECRET").ok(),
+            otter_jwt_issuer: std::env::var("OTTER_JWT_ISSUER").ok(),
+            otter_jwt_audience: std::env::var("OTTER_JWT_AUDIENCE").ok(),
             allow_loopback_webhooks: std::env::var("ALLOW_LOOPBACK_WEBHOOKS")
                 .map(|s| s.parse().unwrap_or(false))
                 .unwrap_or(false),

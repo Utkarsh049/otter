@@ -253,3 +253,135 @@ async fn test_per_ip_concurrency_capping() {
     );
     assert_eq!(peak_ip2_processing, 1, "IP 2 job did not start processing");
 }
+
+#[tokio::test]
+async fn test_per_user_concurrency_capping() {
+    use jsonwebtoken::{encode, EncodingKey, Header};
+    use otter::api::identity::UserAssertionClaims;
+
+    // 1. Build server with max_concurrent = 4, max_concurrent_per_user = 1
+    let mut settings = get_test_settings(4);
+    settings.max_concurrent_per_user = 1;
+    settings.otter_jwt_secret = Some("user-concurrency-secret".to_string());
+    let app = build_router(settings);
+    let server = TestServer::new(app).unwrap();
+
+    let alice_token = encode(
+        &Header::default(),
+        &UserAssertionClaims {
+            sub: "alice".into(),
+            iss: None,
+            aud: None,
+            exp: 9999999999,
+            nbf: None,
+            iat: None,
+            tenant_id: None,
+        },
+        &EncodingKey::from_secret(b"user-concurrency-secret"),
+    )
+    .unwrap();
+
+    let bob_token = encode(
+        &Header::default(),
+        &UserAssertionClaims {
+            sub: "bob".into(),
+            iss: None,
+            aud: None,
+            exp: 9999999999,
+            nbf: None,
+            iat: None,
+            tenant_id: None,
+        },
+        &EncodingKey::from_secret(b"user-concurrency-secret"),
+    )
+    .unwrap();
+
+    // 2. Submit 2 long-running jobs (sleep 200ms each) for Alice
+    let mut tokens_alice = Vec::new();
+    for _ in 0..2 {
+        let request_payload = SubmissionRequest {
+            language: "python".to_string(),
+            source_code: "import time; time.sleep(0.2)".to_string(),
+            stdin: "".to_string(),
+            cpu_time_limit_ms: None,
+            memory_limit_mb: None,
+            wall_time_limit_ms: None,
+            webhook_url: None,
+        };
+        let response = server
+            .post("/submissions")
+            .add_header(
+                axum::http::HeaderName::from_static("x-forwarded-for"),
+                axum::http::HeaderValue::from_static("1.1.1.1"),
+            )
+            .add_header(
+                axum::http::HeaderName::from_static("x-otter-user-assertion"),
+                axum::http::HeaderValue::from_str(&alice_token).unwrap(),
+            )
+            .json(&request_payload)
+            .await;
+        response.assert_status(axum::http::StatusCode::CREATED);
+        tokens_alice.push(response.json::<SubmissionResponse>().token);
+    }
+
+    // 3. Submit 1 long-running job for Bob from the EXACT SAME IP ("1.1.1.1")
+    let request_payload_bob = SubmissionRequest {
+        language: "python".to_string(),
+        source_code: "import time; time.sleep(0.2)".to_string(),
+        stdin: "".to_string(),
+        cpu_time_limit_ms: None,
+        memory_limit_mb: None,
+        wall_time_limit_ms: None,
+        webhook_url: None,
+    };
+    let response_bob = server
+        .post("/submissions")
+        .add_header(
+            axum::http::HeaderName::from_static("x-forwarded-for"),
+            axum::http::HeaderValue::from_static("1.1.1.1"),
+        )
+        .add_header(
+            axum::http::HeaderName::from_static("x-otter-user-assertion"),
+            axum::http::HeaderValue::from_str(&bob_token).unwrap(),
+        )
+        .json(&request_payload_bob)
+        .await;
+    response_bob.assert_status(axum::http::StatusCode::CREATED);
+    let token_bob = response_bob.json::<SubmissionResponse>().token;
+
+    // 4. Poll status during execution:
+    // - Alice is capped at 1 running job, so at most 1 should be Processing.
+    // - Bob has his own quota of 1, so Bob's job should be Processing despite sharing IP "1.1.1.1".
+    let mut peak_alice_processing = 0;
+    let mut peak_bob_processing = 0;
+    let start_time = std::time::Instant::now();
+
+    while start_time.elapsed() < Duration::from_millis(300) {
+        let mut alice_processing = 0;
+        for token in &tokens_alice {
+            let res = server.get(&format!("/submissions/{}", token)).await;
+            res.assert_status_ok();
+            let poll_res = res.json::<SubmissionResponse>();
+            if poll_res.status.id == 2 {
+                alice_processing += 1;
+            }
+        }
+        peak_alice_processing = peak_alice_processing.max(alice_processing);
+
+        let res_bob = server.get(&format!("/submissions/{}", token_bob)).await;
+        res_bob.assert_status_ok();
+        let poll_res_bob = res_bob.json::<SubmissionResponse>();
+        if poll_res_bob.status.id == 2 {
+            peak_bob_processing = 1;
+        }
+
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+
+    assert!(
+        peak_alice_processing <= 1,
+        "Alice peak processing count was {} (exceeded per-user cap 1)",
+        peak_alice_processing
+    );
+    assert_eq!(peak_bob_processing, 1, "Bob job did not start processing concurrently");
+}

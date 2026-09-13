@@ -11,11 +11,12 @@ use axum::{
     Extension, Router,
 };
 use dashmap::DashMap;
-use std::net::{IpAddr, SocketAddr};
+use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use super::handlers::{health, languages, submissions};
+use super::identity::{extract_ip, verify_jwt_assertion, ClientIdentity};
 use crate::config::Settings;
 use crate::execution::languages::registry::LanguageRegistry;
 use crate::queue::worker::Worker;
@@ -44,6 +45,10 @@ impl RateLimiter {
     }
 
     pub fn check(&self, client_id: &str) -> bool {
+        self.check_with_retry(client_id).0
+    }
+
+    pub fn check_with_retry(&self, client_id: &str) -> (bool, u64) {
         let now = Instant::now();
 
         // Periodically clean up expired entries to avoid memory leak
@@ -63,14 +68,15 @@ impl RateLimiter {
         if now.duration_since(*start_time) >= self.window {
             *count = 1;
             *start_time = now;
-            true
+            (true, 0)
+        } else if *count < self.requests {
+            *count += 1;
+            (true, 0)
         } else {
-            if *count < self.requests {
-                *count += 1;
-                true
-            } else {
-                false
-            }
+            let elapsed = now.duration_since(*start_time);
+            let remaining = self.window.saturating_sub(elapsed);
+            let retry_after = remaining.as_secs().max(1);
+            (false, retry_after)
         }
     }
 }
@@ -87,46 +93,41 @@ pub async fn rate_limit_middleware(
         None => return next.run(req).await,
     };
 
-    let client_id =
-        if let Some(ApiKeyExtension(api_key)) = req.extensions().get::<ApiKeyExtension>() {
-            api_key.clone()
-        } else {
-            let fallback_ip = connect_info
-                .map(|c| c.0.ip())
-                .unwrap_or_else(|| "127.0.0.1".parse().unwrap());
-            let ip = req
-                .headers()
-                .get("x-forwarded-for")
-                .and_then(|h| h.to_str().ok())
-                .and_then(|s| s.split(',').next())
-                .and_then(|s| s.trim().parse::<IpAddr>().ok())
-                .or_else(|| {
-                    req.headers()
-                        .get("x-real-ip")
-                        .and_then(|h| h.to_str().ok())
-                        .and_then(|s| s.trim().parse::<IpAddr>().ok())
-                })
-                .unwrap_or(fallback_ip);
-            ip.to_string()
-        };
+    let client_id = if let Some(identity) = req.extensions().get::<ClientIdentity>() {
+        identity.rate_limit_key()
+    } else if let Some(ApiKeyExtension(api_key)) = req.extensions().get::<ApiKeyExtension>() {
+        format!("key:{}", api_key)
+    } else {
+        let ip = extract_ip(req.headers(), connect_info);
+        format!("ip:{}", ip)
+    };
 
-    if !limiter.check(&client_id) {
-        return (
+    let (allowed, retry_after) = limiter.check_with_retry(&client_id);
+    if !allowed {
+        let mut resp = (
             StatusCode::TOO_MANY_REQUESTS,
             Json(serde_json::json!({ "error": "rate limit exceeded" })),
         )
             .into_response();
+        resp.headers_mut().insert(
+            axum::http::header::RETRY_AFTER,
+            axum::http::HeaderValue::from(retry_after),
+        );
+        return resp;
     }
 
     next.run(req).await
 }
 
 pub async fn api_key_auth_middleware(
+    connect_info: Option<ConnectInfo<SocketAddr>>,
     Extension(settings): Extension<Settings>,
     mut req: Request<Body>,
     next: Next,
 ) -> Response {
     if req.uri().path() == "/health" {
+        let ip = extract_ip(req.headers(), connect_info);
+        req.extensions_mut().insert(ClientIdentity::Ip { address: ip });
         return next.run(req).await;
     }
 
@@ -149,59 +150,150 @@ pub async fn api_key_auth_middleware(
         }
     }
 
-    // If no keys are configured for this route, allow anonymous access
-    if expected_keys.is_empty() {
-        return next.run(req).await;
-    }
-
-    // Split configured keys (supporting comma-separated list of keys)
-    let mut valid_keys = Vec::new();
-    for keys_str in expected_keys {
-        for key in keys_str.split(',') {
-            let key = key.trim();
-            if !key.is_empty() {
-                valid_keys.push(key);
-            }
-        }
-    }
-
-    // Parse Authorization header
-    let auth_header = req
-        .headers()
-        .get(axum::http::header::AUTHORIZATION)
-        .and_then(|h| h.to_str().ok());
-
     let mut authenticated_token = None;
 
-    if let Some(auth_str) = auth_header {
-        if auth_str.starts_with("Bearer ") {
-            let token = &auth_str[7..];
-            let token_bytes = token.as_bytes();
-
-            use subtle::ConstantTimeEq;
-            for key in valid_keys {
-                let key_bytes = key.as_bytes();
-                if token_bytes.len() == key_bytes.len()
-                    && token_bytes.ct_eq(key_bytes).unwrap_u8() == 1
-                {
-                    authenticated_token = Some(token.to_string());
-                    break;
+    // Check Authorization header if expected keys are configured
+    if !expected_keys.is_empty() {
+        let mut valid_keys = Vec::new();
+        for keys_str in expected_keys {
+            for key in keys_str.split(',') {
+                let key = key.trim();
+                if !key.is_empty() {
+                    valid_keys.push(key);
                 }
             }
         }
+
+        let auth_header = req
+            .headers()
+            .get(axum::http::header::AUTHORIZATION)
+            .and_then(|h| h.to_str().ok());
+
+        if let Some(auth_str) = auth_header {
+            if auth_str.starts_with("Bearer ") {
+                let token = &auth_str[7..];
+                let token_bytes = token.as_bytes();
+
+                use subtle::ConstantTimeEq;
+                for key in valid_keys {
+                    let key_bytes = key.as_bytes();
+                    if token_bytes.len() == key_bytes.len()
+                        && token_bytes.ct_eq(key_bytes).unwrap_u8() == 1
+                    {
+                        authenticated_token = Some(token.to_string());
+                        break;
+                    }
+                }
+            }
+        }
+
+        if authenticated_token.is_none() {
+            return (
+                StatusCode::UNAUTHORIZED,
+                Json(serde_json::json!({
+                    "error": "unauthorized",
+                    "message": "Invalid or missing API key in Authorization header"
+                })),
+            )
+                .into_response();
+        }
     }
 
-    if authenticated_token.is_none() {
+    // Resolve ClientIdentity
+    let assertion_header = req
+        .headers()
+        .get("x-otter-user-assertion")
+        .and_then(|h| h.to_str().ok())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+
+    let mut user_identity: Option<ClientIdentity> = None;
+
+    if let Some(assertion) = assertion_header {
+        if let Some(ref secret) = settings.otter_jwt_secret {
+            match verify_jwt_assertion(
+                &assertion,
+                secret,
+                settings.otter_jwt_issuer.as_deref(),
+                settings.otter_jwt_audience.as_deref(),
+            ) {
+                Ok(id) => {
+                    user_identity = Some(id);
+                }
+                Err(err) => {
+                    return (
+                        StatusCode::UNAUTHORIZED,
+                        Json(serde_json::json!({
+                            "error": "unauthorized",
+                            "message": format!("Invalid user assertion: {}", err)
+                        })),
+                    )
+                        .into_response();
+                }
+            }
+        } else {
+            return (
+                StatusCode::UNAUTHORIZED,
+                Json(serde_json::json!({
+                    "error": "unauthorized",
+                    "message": "User assertion provided but OTTER_JWT_SECRET is not configured"
+                })),
+            )
+                .into_response();
+        }
+    } else if settings.otter_identity_mode.as_deref() == Some("jwt") {
         return (
             StatusCode::UNAUTHORIZED,
             Json(serde_json::json!({
                 "error": "unauthorized",
-                "message": "Invalid or missing API key in Authorization header"
+                "message": "Missing required user assertion header (X-Otter-User-Assertion)"
             })),
         )
             .into_response();
+    } else if settings.otter_identity_mode.as_deref() == Some("trusted_header") {
+        let user_id_header = req
+            .headers()
+            .get("x-otter-user-id")
+            .and_then(|h| h.to_str().ok())
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+
+        let tenant_id_header = req
+            .headers()
+            .get("x-otter-tenant-id")
+            .and_then(|h| h.to_str().ok())
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+
+        if let Some(user_id) = user_id_header {
+            user_identity = Some(ClientIdentity::User {
+                subject: user_id,
+                tenant_id: tenant_id_header,
+            });
+        } else {
+            return (
+                StatusCode::UNAUTHORIZED,
+                Json(serde_json::json!({
+                    "error": "unauthorized",
+                    "message": "Missing required identity header (X-Otter-User-Id)"
+                })),
+            )
+                .into_response();
+        }
     }
 
+    let client_identity = if let Some(id) = user_identity {
+        id
+    } else if let Some(ref token) = authenticated_token {
+        ClientIdentity::ApiKey {
+            key_id: token.clone(),
+        }
+    } else {
+        let ip = extract_ip(req.headers(), connect_info);
+        ClientIdentity::Ip { address: ip }
+    };
+
+    req.extensions_mut().insert(client_identity);
     if let Some(token) = authenticated_token {
         req.extensions_mut().insert(ApiKeyExtension(token));
     }

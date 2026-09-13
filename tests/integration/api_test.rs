@@ -784,3 +784,141 @@ async fn test_webhook_ssrf_prevention() {
     let flag = *received_flag.lock().await;
     assert!(!flag, "Webhook request was sent to blocklisted IP!");
 }
+
+#[tokio::test]
+async fn test_jwt_assertion_rate_limiting() {
+    use jsonwebtoken::{encode, EncodingKey, Header};
+    use otter::api::identity::UserAssertionClaims;
+
+    let mut settings = get_test_settings();
+    settings.rate_limit_requests = Some(2);
+    settings.rate_limit_window_seconds = Some(60);
+    settings.otter_jwt_secret = Some("jwt-secret-xyz".to_string());
+
+    let app = build_router(settings);
+    let server = TestServer::new(app).unwrap();
+
+    let user_a_token = encode(
+        &Header::default(),
+        &UserAssertionClaims {
+            sub: "alice".into(),
+            iss: None,
+            aud: None,
+            exp: 9999999999,
+            nbf: None,
+            iat: None,
+            tenant_id: None,
+        },
+        &EncodingKey::from_secret(b"jwt-secret-xyz"),
+    )
+    .unwrap();
+
+    let user_b_token = encode(
+        &Header::default(),
+        &UserAssertionClaims {
+            sub: "bob".into(),
+            iss: None,
+            aud: None,
+            exp: 9999999999,
+            nbf: None,
+            iat: None,
+            tenant_id: None,
+        },
+        &EncodingKey::from_secret(b"jwt-secret-xyz"),
+    )
+    .unwrap();
+
+    // Alice request 1 -> ok
+    let res = server
+        .get("/languages")
+        .add_header(
+            axum::http::HeaderName::from_static("x-otter-user-assertion"),
+            axum::http::HeaderValue::from_str(&user_a_token).unwrap(),
+        )
+        .await;
+    res.assert_status_ok();
+
+    // Alice request 2 -> ok
+    let res = server
+        .get("/languages")
+        .add_header(
+            axum::http::HeaderName::from_static("x-otter-user-assertion"),
+            axum::http::HeaderValue::from_str(&user_a_token).unwrap(),
+        )
+        .await;
+    res.assert_status_ok();
+
+    // Alice request 3 -> 429 Too Many Requests with Retry-After header
+    let res = server
+        .get("/languages")
+        .add_header(
+            axum::http::HeaderName::from_static("x-otter-user-assertion"),
+            axum::http::HeaderValue::from_str(&user_a_token).unwrap(),
+        )
+        .await;
+    res.assert_status(axum::http::StatusCode::TOO_MANY_REQUESTS);
+    assert!(res.headers().contains_key(axum::http::header::RETRY_AFTER));
+
+    // Bob request 1 -> ok (isolated counter)
+    let res = server
+        .get("/languages")
+        .add_header(
+            axum::http::HeaderName::from_static("x-otter-user-assertion"),
+            axum::http::HeaderValue::from_str(&user_b_token).unwrap(),
+        )
+        .await;
+    res.assert_status_ok();
+}
+
+#[tokio::test]
+async fn test_invalid_jwt_assertion_rejection() {
+    let mut settings = get_test_settings();
+    settings.otter_jwt_secret = Some("jwt-secret-xyz".to_string());
+
+    let app = build_router(settings);
+    let server = TestServer::new(app).unwrap();
+
+    let res = server
+        .get("/languages")
+        .add_header(
+            axum::http::HeaderName::from_static("x-otter-user-assertion"),
+            axum::http::HeaderValue::from_static("not-a-valid-token"),
+        )
+        .await;
+    res.assert_status(axum::http::StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn test_trusted_header_mode() {
+    let mut settings = get_test_settings();
+    settings.otter_identity_mode = Some("trusted_header".to_string());
+    settings.rate_limit_requests = Some(1);
+    settings.rate_limit_window_seconds = Some(60);
+
+    let app = build_router(settings);
+    let server = TestServer::new(app).unwrap();
+
+    // Missing header in trusted_header mode -> 401
+    let res = server.get("/languages").await;
+    res.assert_status(axum::http::StatusCode::UNAUTHORIZED);
+
+    // Provided header -> 200
+    let res = server
+        .get("/languages")
+        .add_header(
+            axum::http::HeaderName::from_static("x-otter-user-id"),
+            axum::http::HeaderValue::from_static("user-trusted-1"),
+        )
+        .await;
+    res.assert_status_ok();
+
+    // Second request with same user -> 429
+    let res = server
+        .get("/languages")
+        .add_header(
+            axum::http::HeaderName::from_static("x-otter-user-id"),
+            axum::http::HeaderValue::from_static("user-trusted-1"),
+        )
+        .await;
+    res.assert_status(axum::http::StatusCode::TOO_MANY_REQUESTS);
+}
