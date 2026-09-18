@@ -426,6 +426,10 @@ DISABLE_SANDBOX=true
 
 This should not be enabled for public untrusted workloads unless the reduced security is intentional.
 
+Conversely, leaving `DISABLE_SANDBOX` unset allows Otter to perform its automatic capability check. This is why the variable is commented out in `.env.example`.
+
+When Bubblewrap is used inside Docker, the container may need additional permissions to create namespaces and mounts. The deployment documentation discusses this requirement. Extra container privileges should be granted deliberately because they also affect the security of the container itself.
+
 ---
 
 ## Configuration Overview
@@ -498,44 +502,96 @@ while True:
 
 Expected result: memory-limit failure or process termination according to the configured limits.
 
-### Network access attempt
+### Excessive output
 
 ```python
-import socket
-s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-s.connect(("1.1.1.1", 80))
+while True:
+    print("output" * 1000)
 ```
 
-Expected result: network failure inside the network namespace when Bubblewrap is enabled.
+Expected result: output is bounded and the job cannot write unlimited data.
 
-### Forbidden file access
+### Filesystem access
 
 ```python
-print(open("/etc/shadow").read())
+print(open("/etc/passwd").read())
 ```
 
-Expected result: permission failure, missing file, or sandboxed environment view.
+Expected result in the full sandbox: the host's sensitive filesystem should not be available in the same way as to a normal host process.
 
-### Fork bomb
+### Network access
 
-```c
-#include <unistd.h>
-int main() {
-    while (1) {
-        fork();
-    }
-    return 0;
-}
+```python
+import urllib.request
+urllib.request.urlopen("https://example.com")
 ```
 
-Expected result: job fails, exits, or is terminated by Otter rather than exhausting host processes.
+Expected result in the full sandbox: network access should fail because the job runs in an isolated network namespace and the syscall policy restricts network operations.
+
+These tests should be run only against environments you control. They are demonstrations, not a complete security audit.
 
 ---
 
-## Summary
+## Production Checklist
 
-Otter's design centers on three ideas:
+Before exposing Otter to untrusted users:
 
-1. **Untrusted code cannot be trusted by policy alone.** It must be constrained by operating-system and process controls.
-2. **Defense in depth matters.** Limits, seccomp, namespaces, timeouts, and cleanup work together.
-3. **Portability requires intentional compromises.** Otter can run without full virtualization, but fallback mode provides weaker isolation and should only be used when necessary.
+1. Run the service as a non-root user.
+2. Confirm Bubblewrap is installed.
+3. Confirm Bubblewrap can create the required namespaces.
+4. Confirm `DISABLE_SANDBOX` is not set to `true` unintentionally.
+5. Check logs for automatic fallback to raw execution.
+6. Configure `OTTER_API_KEY` and `OTTER_ADMIN_KEY` with strong, unique secrets.
+7. Enable request rate limiting.
+8. Keep `ALLOW_LOOPBACK_WEBHOOKS=false`.
+9. Use HTTPS and a reverse proxy where appropriate.
+10. Keep the host operating system, kernel, Docker runtime, Rust dependencies, and language runtimes updated.
+11. Avoid granting unnecessary container privileges.
+12. Monitor CPU, memory, disk usage, queue depth, and failed jobs.
+13. Treat fallback mode as a reduced-security mode.
+
+---
+
+## Glossary
+
+| Term | Meaning |
+|---|---|
+| **Kernel** | The core part of an operating system that manages processes, memory, files, and hardware. |
+| **Process** | A running program. |
+| **Syscall** | A request from a user program to the operating-system kernel. |
+| **Namespace** | A restricted view of a system resource. |
+| **User namespace** | Isolates user IDs and prevents root inside the namespace from automatically being host root. |
+| **Network namespace** | Gives a process an isolated network stack. |
+| **Mount namespace** | Gives a process an isolated filesystem/mount view. |
+| **Bubblewrap** | A lightweight tool for creating Linux namespaces and filesystem restrictions. |
+| **`rlimit`** | Linux per-process resource limits. |
+| **`RLIMIT_CPU`** | Maximum CPU time available to a process. |
+| **`RLIMIT_AS`** | Maximum virtual address space. |
+| **`RLIMIT_NPROC`** | Maximum number of processes. |
+| **`RLIMIT_FSIZE`** | Maximum file size a process can create. |
+| **`RLIMIT_NOFILE`** | Maximum open file descriptors. |
+| **Seccomp** | A Linux mechanism for restricting system calls. |
+| **BPF** | A small program evaluated by the kernel; seccomp uses BPF filters. |
+| **`SIGKILL`** | A signal that immediately terminates a process. |
+| **`SIGSYS`** | A signal commonly associated with a forbidden system call. |
+| **cgroups** | Linux controls for grouping, limiting, and accounting for processes. |
+| **`ptrace`** | Linux process tracing and debugging mechanism. |
+| **Fork bomb** | An attack that repeatedly creates processes until resources are exhausted. |
+| **DoS** | Denial of service; making a service unavailable. |
+| **SSRF** | Server-Side Request Forgery; tricking a server into making requests to internal addresses. |
+| **tmpfs** | A temporary filesystem commonly stored in memory. |
+| **RSS** | Resident Set Size; physical memory currently used by a process. |
+| **CPU affinity** | Restricting a process to selected CPU cores. |
+| **Niceness** | A process scheduling-priority adjustment. |
+| **Capability** | A specific permission granted to a Linux process or container. |
+| **Privileged container** | A container granted broad host-related permissions; useful for some sandbox setups but increases container risk. |
+
+---
+
+## Further Documentation
+
+- [Security threat model](docs/SECURITY.md)
+- [Deployment guide](docs/DEPLOYMENT.md)
+- [API documentation](docs/API.md)
+- [Environment template](.env.example)
+- [Project README](README.md)
