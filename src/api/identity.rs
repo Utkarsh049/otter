@@ -15,18 +15,34 @@ pub enum ClientIdentity {
     },
 }
 
+fn encode_component(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for b in s.bytes() {
+        match b {
+            b'%' => out.push_str("%25"),
+            b':' => out.push_str("%3A"),
+            _ => out.push(b as char),
+        }
+    }
+    out
+}
+
 impl ClientIdentity {
     pub fn rate_limit_key(&self) -> String {
         match self {
             ClientIdentity::User {
                 subject,
                 tenant_id: Some(tenant),
-            } => format!("tenant:{}:user:{}", tenant, subject),
+            } => format!(
+                "tenant:{}:user:{}",
+                encode_component(tenant),
+                encode_component(subject)
+            ),
             ClientIdentity::User {
                 subject,
                 tenant_id: None,
-            } => format!("user:{}", subject),
-            ClientIdentity::ApiKey { key_id } => format!("key:{}", key_id),
+            } => format!("user:{}", encode_component(subject)),
+            ClientIdentity::ApiKey { key_id } => format!("key:{}", encode_component(key_id)),
             ClientIdentity::Ip { address } => format!("ip:{}", address),
         }
     }
@@ -97,8 +113,15 @@ pub fn verify_jwt_assertion(
     )
     .map_err(|e| IdentityError::InvalidJwt(e.to_string()))?;
 
+    let subject = token_data.claims.sub;
+    if subject.trim().is_empty() {
+        return Err(IdentityError::InvalidJwt(
+            "Subject cannot be empty or whitespace".into(),
+        ));
+    }
+
     Ok(ClientIdentity::User {
-        subject: token_data.claims.sub,
+        subject,
         tenant_id: token_data.claims.tenant_id,
     })
 }
@@ -106,27 +129,48 @@ pub fn verify_jwt_assertion(
 pub fn extract_ip(
     headers: &axum::http::HeaderMap,
     connect_info: Option<axum::extract::ConnectInfo<std::net::SocketAddr>>,
+    trusted_proxies: &[IpAddr],
 ) -> IpAddr {
-    let fallback_ip = connect_info
-        .map(|c| c.0.ip())
-        .unwrap_or_else(|| "127.0.0.1".parse().unwrap());
-    headers
-        .get("x-forwarded-for")
-        .and_then(|h| h.to_str().ok())
-        .and_then(|s| s.split(',').next())
-        .and_then(|s| s.trim().parse::<IpAddr>().ok())
-        .or_else(|| {
-            headers
-                .get("x-real-ip")
-                .and_then(|h| h.to_str().ok())
-                .and_then(|s| s.trim().parse::<IpAddr>().ok())
-        })
-        .unwrap_or(fallback_ip)
+    match connect_info {
+        Some(conn) => {
+            let peer_ip = conn.0.ip();
+            if trusted_proxies.contains(&peer_ip) {
+                headers
+                    .get("x-forwarded-for")
+                    .and_then(|h| h.to_str().ok())
+                    .and_then(|s| s.split(',').next())
+                    .and_then(|s| s.trim().parse::<IpAddr>().ok())
+                    .or_else(|| {
+                        headers
+                            .get("x-real-ip")
+                            .and_then(|h| h.to_str().ok())
+                            .and_then(|s| s.trim().parse::<IpAddr>().ok())
+                    })
+                    .unwrap_or(peer_ip)
+            } else {
+                peer_ip
+            }
+        }
+        None => headers
+            .get("x-forwarded-for")
+            .and_then(|h| h.to_str().ok())
+            .and_then(|s| s.split(',').next())
+            .and_then(|s| s.trim().parse::<IpAddr>().ok())
+            .or_else(|| {
+                headers
+                    .get("x-real-ip")
+                    .and_then(|h| h.to_str().ok())
+                    .and_then(|s| s.trim().parse::<IpAddr>().ok())
+            })
+            .unwrap_or_else(|| "127.0.0.1".parse().unwrap()),
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::extract::ConnectInfo;
+    use axum::http::HeaderMap;
     use jsonwebtoken::{encode, EncodingKey, Header};
 
     #[test]
@@ -159,6 +203,20 @@ mod tests {
     }
 
     #[test]
+    fn test_colon_in_tenant_or_subject_does_not_collide() {
+        let u1 = ClientIdentity::User {
+            subject: "user2".into(),
+            tenant_id: Some("tenant:1".into()),
+        };
+        let u2 = ClientIdentity::User {
+            subject: "1:user:user2".into(),
+            tenant_id: Some("tenant".into()),
+        };
+        assert_ne!(u1.rate_limit_key(), u2.rate_limit_key());
+        assert_ne!(u1.concurrency_key(), u2.concurrency_key());
+    }
+
+    #[test]
     fn test_jwt_verification_valid() {
         let secret = "test-secret-key-1234567890";
         let claims = UserAssertionClaims {
@@ -188,6 +246,30 @@ mod tests {
                 tenant_id: Some("tenant-xyz".into()),
             }
         );
+    }
+
+    #[test]
+    fn test_jwt_verification_empty_subject_rejected() {
+        let secret = "test-secret-key-1234567890";
+        let claims = UserAssertionClaims {
+            sub: "   ".into(),
+            iss: None,
+            aud: None,
+            exp: 9999999999,
+            nbf: None,
+            iat: None,
+            tenant_id: None,
+        };
+
+        let token = encode(
+            &Header::default(),
+            &claims,
+            &EncodingKey::from_secret(secret.as_bytes()),
+        )
+        .unwrap();
+
+        let res = verify_jwt_assertion(&token, secret, None, None);
+        assert!(matches!(res, Err(IdentityError::InvalidJwt(_))));
     }
 
     #[test]
@@ -235,5 +317,26 @@ mod tests {
 
         let res = verify_jwt_assertion(&token, "secret-2", None, None);
         assert!(matches!(res, Err(IdentityError::InvalidJwt(_))));
+    }
+    #[test]
+    fn test_extract_ip_untrusted_proxy_ignored() {
+        let mut headers = HeaderMap::new();
+        headers.insert("x-forwarded-for", "203.0.113.195".parse().unwrap());
+        let connect_info = Some(ConnectInfo("198.51.100.1:12345".parse().unwrap()));
+        let trusted_proxies = vec!["10.0.0.1".parse().unwrap()];
+
+        let ip = extract_ip(&headers, connect_info, &trusted_proxies);
+        assert_eq!(ip, "198.51.100.1".parse::<IpAddr>().unwrap());
+    }
+
+    #[test]
+    fn test_extract_ip_trusted_proxy_honored() {
+        let mut headers = HeaderMap::new();
+        headers.insert("x-forwarded-for", "203.0.113.195, 10.0.0.1".parse().unwrap());
+        let connect_info = Some(ConnectInfo("10.0.0.1:12345".parse().unwrap()));
+        let trusted_proxies = vec!["10.0.0.1".parse().unwrap()];
+
+        let ip = extract_ip(&headers, connect_info, &trusted_proxies);
+        assert_eq!(ip, "203.0.113.195".parse::<IpAddr>().unwrap());
     }
 }

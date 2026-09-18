@@ -158,7 +158,12 @@ async fn trigger_webhook(webhook_url: String, response: SubmissionResponse, allo
 
     for addr in resolved {
         let ip = addr.ip();
-        if !allow_loopback && is_blocklisted(ip) {
+        let blocked = if allow_loopback {
+            !ip.is_loopback() && is_blocklisted(ip)
+        } else {
+            is_blocklisted(ip)
+        };
+        if blocked {
             tracing::warn!(
                 "SSRF prevention: blocked webhook request to blocklisted IP {} for URL '{}'",
                 ip,
@@ -202,7 +207,6 @@ impl Worker {
             let store = store.clone();
             let registry = registry.clone();
             let slots = Arc::new(super::slot::SlotAllocator::new(settings.max_concurrent));
-            let identity_semaphores = Arc::new(DashMap::new());
             let max_concurrent_per_ip = settings.max_concurrent_per_ip;
             let max_concurrent_per_user = settings.max_concurrent_per_user;
             let in_flight = in_flight.clone();
@@ -213,19 +217,22 @@ impl Worker {
                 let store = store.clone();
                 let registry = registry.clone();
                 let slots = slots.clone();
-                let identity_semaphores = identity_semaphores.clone();
                 let in_flight = in_flight.clone();
 
                 tokio::spawn(async move {
                     loop {
                         let conn_res = tokio::time::timeout(Duration::from_secs(2), async {
                             client.get_multiplexed_tokio_connection().await
-                        }).await;
+                        })
+                        .await;
 
                         let mut conn = match conn_res {
                             Ok(Ok(c)) => c,
                             Ok(Err(e)) => {
-                                tracing::error!("Worker failed to connect to Redis, retrying in 2s: {:?}", e);
+                                tracing::error!(
+                                    "Worker failed to connect to Redis, retrying in 2s: {:?}",
+                                    e
+                                );
                                 tokio::time::sleep(Duration::from_secs(2)).await;
                                 continue;
                             }
@@ -240,119 +247,187 @@ impl Worker {
                             use redis::AsyncCommands;
                             let popped: Result<Option<(String, String)>, redis::RedisError> =
                                 conn.brpop("queue:submissions", 1.0).await;
-                        match popped {
-                            Ok(Some((_, json_str))) => {
-                                let job: QueuedJob = match serde_json::from_str(&json_str) {
-                                    Ok(j) => j,
-                                    Err(e) => {
-                                        tracing::error!("Failed to parse job JSON: {:?}", e);
-                                        continue;
-                                    }
-                                };
+                            match popped {
+                                Ok(Some((_, json_str))) => {
+                                    let job: QueuedJob = match serde_json::from_str(&json_str) {
+                                        Ok(j) => j,
+                                        Err(e) => {
+                                            tracing::error!("Failed to parse job JSON: {:?}", e);
+                                            continue;
+                                        }
+                                    };
 
-                                let identity_key = job
-                                    .identity_key
-                                    .clone()
-                                    .unwrap_or_else(|| format!("ip:{}", job.ip));
+                                    let identity_key = job
+                                        .identity_key
+                                        .clone()
+                                        .unwrap_or_else(|| format!("ip:{}", job.ip));
 
-                                let client_sem = Self::get_identity_semaphore(
-                                    &identity_semaphores,
-                                    &identity_key,
-                                    max_concurrent_per_user,
-                                    max_concurrent_per_ip,
-                                );
+                                    let max_limit = if identity_key.starts_with("user:")
+                                        || identity_key.starts_with("tenant:")
+                                    {
+                                        max_concurrent_per_user
+                                    } else {
+                                        max_concurrent_per_ip
+                                    };
 
-                                let client_permit = client_sem.try_acquire();
-                                match client_permit {
-                                    Ok(_client_permit) => {
-                                        let _ = store
-                                            .update_status(&job.token, StatusCode::processing())
-                                            .await;
-                                        in_flight.fetch_add(1, Ordering::Relaxed);
+                                    let redis_concurrency_key =
+                                        format!("concurrency:{}", identity_key);
+                                    let ttl_secs = ((job.limits.wall_time_ms / 1000) + 30).max(60);
 
-                                        let slot_id = match slots.allocate() {
-                                            Some(id) => id,
-                                            None => {
-                                                tracing::error!(
+                                    let acquire_script = redis::Script::new(
+                                        r#"
+                                    local current = redis.call('INCR', KEYS[1])
+                                    if current > tonumber(ARGV[1]) then
+                                        redis.call('DECR', KEYS[1])
+                                        return 0
+                                    else
+                                        redis.call('EXPIRE', KEYS[1], tonumber(ARGV[2]))
+                                        return 1
+                                    end
+                                "#,
+                                    );
+
+                                    let acquired: Result<i32, redis::RedisError> = acquire_script
+                                        .key(&redis_concurrency_key)
+                                        .arg(max_limit)
+                                        .arg(ttl_secs)
+                                        .invoke_async(&mut conn)
+                                        .await;
+
+                                    match acquired {
+                                        Ok(1) => {
+                                            struct RedisPermitGuard {
+                                                client: redis::Client,
+                                                key: String,
+                                            }
+                                            impl Drop for RedisPermitGuard {
+                                                fn drop(&mut self) {
+                                                    let client = self.client.clone();
+                                                    let key = self.key.clone();
+                                                    tokio::spawn(async move {
+                                                        if let Ok(mut c) = client
+                                                            .get_multiplexed_tokio_connection()
+                                                            .await
+                                                        {
+                                                            let release_script = redis::Script::new(
+                                                                r#"
+                                                            local current = redis.call('DECR', KEYS[1])
+                                                            if current <= 0 then
+                                                                redis.call('DEL', KEYS[1])
+                                                            end
+                                                            return 0
+                                                        "#,
+                                                            );
+                                                            let _: Result<(), redis::RedisError> =
+                                                                release_script
+                                                                    .key(&key)
+                                                                    .invoke_async(&mut c)
+                                                                    .await;
+                                                        }
+                                                    });
+                                                }
+                                            }
+                                            let _redis_permit = RedisPermitGuard {
+                                                client: client.clone(),
+                                                key: redis_concurrency_key,
+                                            };
+
+                                            let _ = store
+                                                .update_status(&job.token, StatusCode::processing())
+                                                .await;
+                                            in_flight.fetch_add(1, Ordering::Relaxed);
+
+                                            let slot_id = match slots.allocate() {
+                                                Some(id) => id,
+                                                None => {
+                                                    tracing::error!(
                                                     "No slot available despite thread allocation"
                                                 );
-                                                let _ = store
-                                                    .update_status(
-                                                        &job.token,
-                                                        StatusCode::internal_error(),
-                                                    )
-                                                    .await;
-                                                if let Some(webhook_url) = job.webhook_url.clone() {
-                                                    if let Some(resp) =
-                                                        store.get(&job.token).await.ok().flatten()
-                                                    {
-                                                        tokio::spawn(trigger_webhook(
-                                                            webhook_url,
-                                                            resp,
-                                                            allow_loopback,
-                                                        ));
-                                                    }
-                                                }
-                                                in_flight.fetch_sub(1, Ordering::Relaxed);
-                                                continue;
-                                            }
-                                        };
-
-                                        struct SlotGuard {
-                                            slot_id: usize,
-                                            allocator: Arc<super::slot::SlotAllocator>,
-                                        }
-                                        impl Drop for SlotGuard {
-                                            fn drop(&mut self) {
-                                                self.allocator.release(self.slot_id);
-                                            }
-                                        }
-                                        let _slot_guard = SlotGuard {
-                                            slot_id,
-                                            allocator: slots.clone(),
-                                        };
-
-                                        let lang = registry.get(&job.language_id);
-                                        if let Some(lang) = lang {
-                                            let mut limits_with_slot = job.limits.clone();
-                                            limits_with_slot.slot_id = Some(slot_id);
-
-                                            let token_log = job.token.clone();
-                                            let language_id_log = job.language_id.clone();
-
-                                            let exec_result = Engine::execute(
-                                                lang,
-                                                job.source_code,
-                                                job.stdin,
-                                                limits_with_slot,
-                                            )
-                                            .await;
-                                            match exec_result {
-                                                Ok(res) => {
                                                     let _ = store
-                                                        .update_result(
+                                                        .update_status(
                                                             &job.token,
-                                                            res.clone(),
-                                                            &job.language_id,
+                                                            StatusCode::internal_error(),
                                                         )
                                                         .await;
-
-                                                    let status_str = format!("{:?}", res.status);
-                                                    tracing::info!(
-                                                        token = %token_log,
-                                                        language = %language_id_log,
-                                                        status = %status_str,
-                                                        cpu_time_ms = res.time_ms,
-                                                        memory_kb = res.memory_kb,
-                                                        exit_code = res.exit_code,
-                                                        "Submission completed"
-                                                    );
-
-                                                    if res.status
-                                                        == ExecutionStatus::CompilationError
+                                                    if let Some(webhook_url) =
+                                                        job.webhook_url.clone()
                                                     {
-                                                        let excerpt =
-                                                            if res.compile_output.chars().count()
+                                                        if let Some(resp) = store
+                                                            .get(&job.token)
+                                                            .await
+                                                            .ok()
+                                                            .flatten()
+                                                        {
+                                                            tokio::spawn(trigger_webhook(
+                                                                webhook_url,
+                                                                resp,
+                                                                allow_loopback,
+                                                            ));
+                                                        }
+                                                    }
+                                                    in_flight.fetch_sub(1, Ordering::Relaxed);
+                                                    continue;
+                                                }
+                                            };
+
+                                            struct SlotGuard {
+                                                slot_id: usize,
+                                                allocator: Arc<super::slot::SlotAllocator>,
+                                            }
+                                            impl Drop for SlotGuard {
+                                                fn drop(&mut self) {
+                                                    self.allocator.release(self.slot_id);
+                                                }
+                                            }
+                                            let _slot_guard = SlotGuard {
+                                                slot_id,
+                                                allocator: slots.clone(),
+                                            };
+
+                                            let lang = registry.get(&job.language_id);
+                                            if let Some(lang) = lang {
+                                                let mut limits_with_slot = job.limits.clone();
+                                                limits_with_slot.slot_id = Some(slot_id);
+
+                                                let token_log = job.token.clone();
+                                                let language_id_log = job.language_id.clone();
+
+                                                let exec_result = Engine::execute(
+                                                    lang,
+                                                    job.source_code,
+                                                    job.stdin,
+                                                    limits_with_slot,
+                                                )
+                                                .await;
+                                                match exec_result {
+                                                    Ok(res) => {
+                                                        let _ = store
+                                                            .update_result(
+                                                                &job.token,
+                                                                res.clone(),
+                                                                &job.language_id,
+                                                            )
+                                                            .await;
+
+                                                        let status_str =
+                                                            format!("{:?}", res.status);
+                                                        tracing::info!(
+                                                            token = %token_log,
+                                                            language = %language_id_log,
+                                                            status = %status_str,
+                                                            cpu_time_ms = res.time_ms,
+                                                            memory_kb = res.memory_kb,
+                                                            exit_code = res.exit_code,
+                                                            "Submission completed"
+                                                        );
+
+                                                        if res.status
+                                                            == ExecutionStatus::CompilationError
+                                                        {
+                                                            let excerpt = if res
+                                                                .compile_output
+                                                                .chars()
+                                                                .count()
                                                                 > 200
                                                             {
                                                                 let taken: String = res
@@ -364,14 +439,14 @@ impl Worker {
                                                             } else {
                                                                 res.compile_output.clone()
                                                             };
-                                                        tracing::warn!(
-                                                            token = %token_log,
-                                                            excerpt = %excerpt,
-                                                            "Compilation error occurred"
-                                                        );
-                                                    }
+                                                            tracing::warn!(
+                                                                token = %token_log,
+                                                                excerpt = %excerpt,
+                                                                "Compilation error occurred"
+                                                            );
+                                                        }
 
-                                                    match res.status {
+                                                        match res.status {
                                                         ExecutionStatus::TimeLimitExceeded => {
                                                             tracing::warn!(
                                                                 token = %token_log,
@@ -398,97 +473,97 @@ impl Worker {
                                                         _ => {}
                                                     }
 
-                                                    if let Some(webhook_url) =
-                                                        job.webhook_url.clone()
-                                                    {
-                                                        if let Some(resp) = store
-                                                            .get(&job.token)
-                                                            .await
-                                                            .ok()
-                                                            .flatten()
+                                                        if let Some(webhook_url) =
+                                                            job.webhook_url.clone()
                                                         {
-                                                            tokio::spawn(trigger_webhook(
-                                                                webhook_url,
-                                                                resp,
-                                                                allow_loopback,
-                                                            ));
+                                                            if let Some(resp) = store
+                                                                .get(&job.token)
+                                                                .await
+                                                                .ok()
+                                                                .flatten()
+                                                            {
+                                                                tokio::spawn(trigger_webhook(
+                                                                    webhook_url,
+                                                                    resp,
+                                                                    allow_loopback,
+                                                                ));
+                                                            }
+                                                        }
+                                                    }
+                                                    Err(e) => {
+                                                        tracing::error!(
+                                                            "Submission execution failed: {:?}",
+                                                            e
+                                                        );
+                                                        let _ = store
+                                                            .update_status(
+                                                                &job.token,
+                                                                StatusCode::internal_error(),
+                                                            )
+                                                            .await;
+                                                        if let Some(webhook_url) =
+                                                            job.webhook_url.clone()
+                                                        {
+                                                            if let Some(resp) = store
+                                                                .get(&job.token)
+                                                                .await
+                                                                .ok()
+                                                                .flatten()
+                                                            {
+                                                                tokio::spawn(trigger_webhook(
+                                                                    webhook_url,
+                                                                    resp,
+                                                                    allow_loopback,
+                                                                ));
+                                                            }
                                                         }
                                                     }
                                                 }
-                                                Err(e) => {
-                                                    tracing::error!(
-                                                        "Submission execution failed: {:?}",
-                                                        e
-                                                    );
-                                                    let _ = store
-                                                        .update_status(
-                                                            &job.token,
-                                                            StatusCode::internal_error(),
-                                                        )
-                                                        .await;
-                                                    if let Some(webhook_url) =
-                                                        job.webhook_url.clone()
+                                            } else {
+                                                tracing::error!(
+                                                    "Unsupported language {} for job {}",
+                                                    job.language_id,
+                                                    job.token
+                                                );
+                                                let _ = store
+                                                    .update_status(
+                                                        &job.token,
+                                                        StatusCode::internal_error(),
+                                                    )
+                                                    .await;
+                                                if let Some(webhook_url) = job.webhook_url.clone() {
+                                                    if let Some(resp) =
+                                                        store.get(&job.token).await.ok().flatten()
                                                     {
-                                                        if let Some(resp) = store
-                                                            .get(&job.token)
-                                                            .await
-                                                            .ok()
-                                                            .flatten()
-                                                        {
-                                                            tokio::spawn(trigger_webhook(
-                                                                webhook_url,
-                                                                resp,
-                                                                allow_loopback,
-                                                            ));
-                                                        }
+                                                        tokio::spawn(trigger_webhook(
+                                                            webhook_url,
+                                                            resp,
+                                                            allow_loopback,
+                                                        ));
                                                     }
                                                 }
                                             }
-                                        } else {
-                                            tracing::error!(
-                                                "Unsupported language {} for job {}",
-                                                job.language_id,
-                                                job.token
-                                            );
-                                            let _ = store
-                                                .update_status(
-                                                    &job.token,
-                                                    StatusCode::internal_error(),
-                                                )
-                                                .await;
-                                            if let Some(webhook_url) = job.webhook_url.clone() {
-                                                if let Some(resp) =
-                                                    store.get(&job.token).await.ok().flatten()
-                                                {
-                                                    tokio::spawn(trigger_webhook(
-                                                        webhook_url,
-                                                        resp,
-                                                        allow_loopback,
-                                                    ));
-                                                }
-                                            }
-                                        }
 
-                                        in_flight.fetch_sub(1, Ordering::Relaxed);
-                                    }
-                                    Err(_) => {
-                                        // Push job back onto queue (RPUSH) and sleep
-                                        let _: Result<(), redis::RedisError> =
-                                            conn.rpush("queue:submissions", json_str).await;
-                                        tokio::time::sleep(Duration::from_millis(50)).await;
+                                            in_flight.fetch_sub(1, Ordering::Relaxed);
+                                        }
+                                        _ => {
+                                            // Push job back onto queue (RPUSH) and sleep
+                                            let _: Result<(), redis::RedisError> =
+                                                conn.rpush("queue:submissions", json_str).await;
+                                            tokio::time::sleep(Duration::from_millis(50)).await;
+                                        }
                                     }
                                 }
-                            }
-                            Ok(None) => {}
-                            Err(e) => {
-                                tracing::error!("BRPOP failed: {:?}. Reconnecting...", e);
-                                break;
+                                Ok(None) => {}
+                                Err(e) => {
+                                    tracing::error!("BRPOP failed: {:?}. Reconnecting...", e);
+                                    break;
+                                }
                             }
                         }
+                        tokio::time::sleep(Duration::from_secs(1)).await;
                     }
-                    tokio::time::sleep(Duration::from_secs(1)).await;
-                }
-            });
+                });
             }
         }
 
@@ -522,6 +597,10 @@ impl Worker {
             max_ip
         };
 
+        if semaphores.len() > 128 {
+            semaphores.retain(|_, sem| Arc::strong_count(sem) > 1);
+        }
+
         semaphores
             .entry(key.to_string())
             .or_insert_with(|| Arc::new(Semaphore::new(capacity)))
@@ -547,7 +626,8 @@ impl Worker {
 
             let connect_res = tokio::time::timeout(Duration::from_secs(2), async {
                 client.get_multiplexed_tokio_connection().await
-            }).await;
+            })
+            .await;
 
             match connect_res {
                 Ok(Ok(c)) => {
@@ -751,15 +831,14 @@ impl Worker {
                 ));
             }
 
-            Ok(())
-        } else {
+            Ok(())        } else {
             // Existing in-memory logic
             let current = self.queue_depth.load(Ordering::Relaxed);
             if current >= self.max_queue_depth {
                 return Err(EnqueueError::DefinitivelyNotEnqueued(
                     crate::api::errors::ApiError::TooManyRequests(
                         "server is at capacity, try again shortly".to_string(),
-                    )
+                    ),
                 ));
             }
 
@@ -774,6 +853,7 @@ impl Worker {
 
             let slots = self.slots.clone();
 
+            let identity_semaphores = self.identity_semaphores.clone();
             let identity_key = identity.concurrency_key();
             let client_sem = Self::get_identity_semaphore(
                 &self.identity_semaphores,
@@ -786,6 +866,21 @@ impl Worker {
             let allow_loopback = self.allow_loopback;
 
             tokio::spawn(async move {
+                struct IdentityCleanupGuard {
+                    map: Arc<DashMap<String, Arc<Semaphore>>>,
+                    key: String,
+                }
+                impl Drop for IdentityCleanupGuard {
+                    fn drop(&mut self) {
+                        self.map
+                            .remove_if(&self.key, |_, sem| Arc::strong_count(sem) == 1);
+                    }
+                }
+                let _cleanup_guard = IdentityCleanupGuard {
+                    map: identity_semaphores,
+                    key: identity_key,
+                };
+
                 let _guard = QueueDepthGuard(queue_depth);
 
                 // Acquire client-specific permit first to avoid global lock contention / HOL blocking
@@ -859,20 +954,14 @@ impl Worker {
                         let _ = store
                             .update_status(&token, StatusCode::internal_error())
                             .await;
-                        if let Some(webhook_url) = webhook_url_clone.clone() {
-                            if let Ok(Some(resp)) = store.get(&token).await {
-                                tokio::spawn(trigger_webhook(webhook_url, resp, allow_loopback));
-                            }
-                        }
                         return;
                     }
                 };
 
-                let mut limits_with_slot = limits;
+                let mut limits_with_slot = limits.clone();
                 limits_with_slot.slot_id = Some(slot_id);
 
                 let exec_result = Engine::execute(lang, source_code, stdin, limits_with_slot).await;
-
                 match exec_result {
                     Ok(res) => {
                         let _ = store.update_result(&token, res.clone(), &language_id).await;
@@ -947,6 +1036,8 @@ impl Worker {
                 }
 
                 drop(permit);
+                drop(_client_permit);
+                drop(client_sem);
             });
             Ok(())
         }

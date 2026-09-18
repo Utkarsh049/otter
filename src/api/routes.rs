@@ -98,7 +98,12 @@ pub async fn rate_limit_middleware(
     } else if let Some(ApiKeyExtension(api_key)) = req.extensions().get::<ApiKeyExtension>() {
         format!("key:{}", api_key)
     } else {
-        let ip = extract_ip(req.headers(), connect_info);
+        let trusted = req
+            .extensions()
+            .get::<Settings>()
+            .map(|s| s.trusted_proxies.as_slice())
+            .unwrap_or(&[]);
+        let ip = extract_ip(req.headers(), connect_info, trusted);
         format!("ip:{}", ip)
     };
 
@@ -126,8 +131,9 @@ pub async fn api_key_auth_middleware(
     next: Next,
 ) -> Response {
     if req.uri().path() == "/health" {
-        let ip = extract_ip(req.headers(), connect_info);
-        req.extensions_mut().insert(ClientIdentity::Ip { address: ip });
+        let ip = extract_ip(req.headers(), connect_info, &settings.trusted_proxies);
+        req.extensions_mut()
+            .insert(ClientIdentity::Ip { address: ip });
         return next.run(req).await;
     }
 
@@ -289,7 +295,7 @@ pub async fn api_key_auth_middleware(
             key_id: token.clone(),
         }
     } else {
-        let ip = extract_ip(req.headers(), connect_info);
+        let ip = extract_ip(req.headers(), connect_info, &settings.trusted_proxies);
         ClientIdentity::Ip { address: ip }
     };
 
@@ -360,7 +366,8 @@ mod tests {
         let server = TestServer::new(app).unwrap();
 
         // Check otter_admin_key is accepted on /admin/submissions
-        let res = server.get("/admin/submissions")
+        let res = server
+            .get("/admin/submissions")
             .add_header(
                 axum::http::header::AUTHORIZATION,
                 axum::http::HeaderValue::from_static("Bearer admin_key"),
@@ -369,7 +376,8 @@ mod tests {
         assert_eq!(res.status_code(), axum::http::StatusCode::OK);
 
         // Check non-admin /languages route accepts admin_key when both exist
-        let res = server.get("/languages")
+        let res = server
+            .get("/languages")
             .add_header(
                 axum::http::header::AUTHORIZATION,
                 axum::http::HeaderValue::from_static("Bearer admin_key"),
@@ -378,7 +386,8 @@ mod tests {
         assert_eq!(res.status_code(), axum::http::StatusCode::OK);
 
         // Check otter_api_key is rejected on /admin/submissions
-        let res = server.get("/admin/submissions")
+        let res = server
+            .get("/admin/submissions")
             .add_header(
                 axum::http::header::AUTHORIZATION,
                 axum::http::HeaderValue::from_static("Bearer client_key"),
@@ -393,7 +402,8 @@ mod tests {
         let app = build_router(settings);
         let server = TestServer::new(app).unwrap();
 
-        let res = server.get("/admin/submissions")
+        let res = server
+            .get("/admin/submissions")
             .add_header(
                 axum::http::header::AUTHORIZATION,
                 axum::http::HeaderValue::from_static("Bearer client_key"),

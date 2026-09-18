@@ -53,7 +53,7 @@ Capture stdout, stderr, timing, and memory usage
 Terminate timed-out processes and clean up files
 ```
 
-The main execution implementation is in [`src/execution/engine.rs`](src/execution/engine.rs). API request handling is in [`src/api`](src/api), and background queue processing is in [`src/queue`](src/queue).
+The main execution implementation is in [`src/execution/engine.rs`](../src/execution/engine.rs). API request handling is in [`src/api`](../src/api), and background queue processing is in [`src/queue`](../src/queue).
 
 ---
 
@@ -123,7 +123,7 @@ Otter uses defense in depth: several independent controls are applied so that on
 ```text
 Application controls
     |
-    +-- queue, concurrency, per-IP fairness, rate limiting
+    +-- queue, concurrency, per-IP fairness, per-user fairness, rate limiting
 
 Process controls
     |
@@ -157,10 +157,11 @@ Before a job is executed, Otter limits how much work the API and worker system w
 | `MAX_CONCURRENT` | Maximum number of jobs executing at the same time |
 | `MAX_QUEUE_DEPTH` | Maximum number of jobs waiting in the queue |
 | `MAX_CONCURRENT_PER_IP` | Prevents one client IP from consuming all execution slots |
+| `MAX_CONCURRENT_PER_USER` | Prevents one authenticated user/identity from consuming all execution slots |
 | `RATE_LIMIT_REQUESTS` | Number of requests allowed in a rate-limit window |
 | `RATE_LIMIT_WINDOW_SECONDS` | Length of the rate-limit window |
 
-The global concurrency limit prevents the service from starting unlimited jobs. The per-IP limit provides fair sharing so that one client cannot easily starve other clients.
+The global concurrency limit prevents the service from starting unlimited jobs. The per-IP and per-user limits provide fair sharing so that one client or user cannot easily starve other clients.
 
 Rate limiting is optional and is enabled only when both rate-limit variables are configured.
 
@@ -323,7 +324,7 @@ Loopback webhook access can be enabled for testing with:
 ALLOW_LOOPBACK_WEBHOOKS=true
 ```
 
-This should remain `false` for public deployments unless it is specifically required.
+When enabled, this allows delivery strictly to loopback addresses (`127.0.0.1`, `::1`) for isolated test harnesses. Other blocked destinations (private subnets, link-local, cloud metadata services, multicast, broadcast) remain strictly forbidden. This should remain `false` for public deployments.
 
 ---
 
@@ -399,10 +400,11 @@ If they are unavailable, Otter can fall back to raw execution mode. In fallback 
 ```text
 RLIMIT_CPU
 RLIMIT_AS
-RLIMIT_NPROC
 RLIMIT_FSIZE
 RLIMIT_NOFILE
 ```
+
+> **Note on `RLIMIT_NPROC`:** Process count limits (`RLIMIT_NPROC`) are **not** applied in unjailed raw fallback mode. Without Bubblewrap's unprivileged user namespaces, setting `RLIMIT_NPROC` would constrain the host UID shared by the Otter daemon itself, risking service starvation or crashes. Fork bomb mitigation therefore depends on Bubblewrap.
 
 However, raw mode does not provide the same filesystem, network, and user-namespace isolation as Bubblewrap.
 
@@ -445,10 +447,16 @@ The main configuration is loaded from environment variables.
 | `MAX_OUTPUT_BYTES` | Maximum captured output | `1048576` |
 | `MAX_QUEUE_DEPTH` | Maximum queued jobs | `100` |
 | `MAX_CONCURRENT_PER_IP` | Per-IP execution limit | `2` |
+| `MAX_CONCURRENT_PER_USER` | Per-user execution limit | `2` |
 | `DISABLE_SANDBOX` | Force raw execution mode | Automatic detection when unset |
 | `REDIS_URL` | Optional Redis queue/store backend | Unset |
 | `OTTER_API_KEY` | Optional bearer API key(s) | Unset |
 | `OTTER_ADMIN_KEY` | Optional admin bearer key | Unset |
+| `OTTER_IDENTITY_MODE` | User identity mode (`jwt` or `trusted_header`) | Unset |
+| `OTTER_JWT_SECRET` | Shared secret for verifying user assertions | Unset |
+| `OTTER_JWT_ISSUER` | Expected JWT issuer (`iss` claim) | Unset |
+| `OTTER_JWT_AUDIENCE` | Expected JWT audience (`aud` claim) | Unset |
+| `TRUSTED_PROXIES` | Trusted reverse proxy IPs for forwarded headers | Unset |
 | `RATE_LIMIT_REQUESTS` | Optional request limit | Unset |
 | `RATE_LIMIT_WINDOW_SECONDS` | Optional rate-limit window | Unset |
 | `ALLOW_LOOPBACK_WEBHOOKS` | Allow loopback webhook targets | `false` |
@@ -457,13 +465,13 @@ The main configuration is loaded from environment variables.
 | `RUST_LOG` | Rust tracing filter | `info` |
 | `OTTER_ENFORCE_NPROC` | Force process-count enforcement | Unset |
 
-See [`.env.example`](.env.example) for a safe configuration template.
+See [`.env.example`](../.env.example) for a safe configuration template.
 
 ---
 
 ## API Authentication
 
-If neither API key variable is configured, API routes allow anonymous access. This is convenient for local development but is not appropriate for an exposed production service.
+If neither API key variable is configured and `OTTER_IDENTITY_MODE` is unset, API routes allow anonymous access. If `OTTER_IDENTITY_MODE` is set to `jwt` or `trusted_header`, routes require the corresponding valid identity header (`X-Otter-User-Assertion` or `X-Otter-User-Id`) even when API keys are not configured. Anonymous access is convenient for local development but is not appropriate for an exposed production service.
 
 For production, configure strong secrets such as:
 
@@ -587,8 +595,9 @@ Before exposing Otter to untrusted users:
 
 ## Further Documentation
 
-- [Security threat model](docs/SECURITY.md)
-- [Deployment guide](docs/DEPLOYMENT.md)
-- [API documentation](docs/API.md)
-- [Environment template](.env.example)
-- [Project README](README.md)
+- [Online IDE setup guide](../SETUP.md)
+- [Security threat model](SECURITY.md)
+- [Deployment guide](DEPLOYMENT.md)
+- [API documentation](API.md)
+- [Environment template](../.env.example)
+- [Project README](../README.md)

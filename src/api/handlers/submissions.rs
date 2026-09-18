@@ -16,22 +16,34 @@ use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use uuid::Uuid;
 
-fn get_client_ip(headers: &HeaderMap, connect_info: Option<ConnectInfo<SocketAddr>>) -> IpAddr {
-    let fallback_ip = connect_info
-        .map(|c| c.0.ip())
-        .unwrap_or_else(|| "127.0.0.1".parse().unwrap());
-    headers
-        .get("x-forwarded-for")
-        .and_then(|h| h.to_str().ok())
-        .and_then(|s| s.split(',').next())
-        .and_then(|s| s.trim().parse::<IpAddr>().ok())
-        .or_else(|| {
-            headers
-                .get("x-real-ip")
-                .and_then(|h| h.to_str().ok())
-                .and_then(|s| s.trim().parse::<IpAddr>().ok())
-        })
-        .unwrap_or(fallback_ip)
+fn get_client_ip(
+    headers: &HeaderMap,
+    connect_info: Option<ConnectInfo<SocketAddr>>,
+    trusted_proxies: &[IpAddr],
+) -> IpAddr {
+    crate::api::identity::extract_ip(headers, connect_info, trusted_proxies)
+}
+
+fn sanitize_client_identity(
+    identity: Option<Extension<ClientIdentity>>,
+    headers: &HeaderMap,
+    connect_info: Option<ConnectInfo<SocketAddr>>,
+    trusted_proxies: &[IpAddr],
+) -> ClientIdentity {
+    match identity {
+        Some(Extension(ClientIdentity::ApiKey { key_id })) => {
+            let mut hasher = sha1_smol::Sha1::new();
+            hasher.update(key_id.as_bytes());
+            ClientIdentity::ApiKey {
+                key_id: hasher.digest().to_string(),
+            }
+        }
+        Some(Extension(id)) => id,
+        None => {
+            let ip = get_client_ip(headers, connect_info, trusted_proxies);
+            ClientIdentity::Ip { address: ip }
+        }
+    }
 }
 
 pub async fn submit(
@@ -56,10 +68,13 @@ pub async fn submit(
         .ok_or_else(|| ApiError::BadRequest(format!("unsupported language: '{}'", req.language)))?;
 
     let token = Uuid::new_v4().to_string();
-    store.insert(token.clone(), StatusCode::queued()).await.map_err(|e| {
-        tracing::error!("Failed to initialize submission: {}", e);
-        ApiError::InternalError("Failed to initialize submission".to_string())
-    })?;
+    store
+        .insert(token.clone(), StatusCode::queued())
+        .await
+        .map_err(|e| {
+            tracing::error!("Failed to initialize submission: {}", e);
+            ApiError::InternalError("Failed to initialize submission".to_string())
+        })?;
 
     let limits = Limits {
         cpu_time_ms: req.cpu_time_limit_ms.unwrap_or(settings.cpu_limit_ms),
@@ -71,13 +86,8 @@ pub async fn submit(
         slot_id: None,
     };
 
-    let client_identity = match identity {
-        Some(Extension(id)) => id,
-        None => {
-            let ip = get_client_ip(&headers, connect_info);
-            ClientIdentity::Ip { address: ip }
-        }
-    };
+    let client_identity =
+        sanitize_client_identity(identity, &headers, connect_info, &settings.trusted_proxies);
 
     if let Err(e) = worker
         .enqueue(
@@ -91,7 +101,10 @@ pub async fn submit(
         )
         .await
     {
-        let should_remove = matches!(e, crate::queue::worker::EnqueueError::DefinitivelyNotEnqueued(_));
+        let should_remove = matches!(
+            e,
+            crate::queue::worker::EnqueueError::DefinitivelyNotEnqueued(_)
+        );
         if should_remove {
             if let Err(remove_err) = store.remove(&token).await {
                 use std::hash::{Hash, Hasher};
@@ -119,19 +132,46 @@ pub async fn submit(
         return Err(mapped_err);
     }
 
-    Ok((
-        axum::http::StatusCode::CREATED,
-        Json(SubmissionResponse {
-            token,
-            status: StatusCode::queued(),
-            stdout: None,
-            stderr: None,
-            compile_output: None,
-            time_ms: None,
-            memory_kb: None,
-            exit_code: None,
-        }),
-    ))
+    let response = SubmissionResponse {
+        token,
+        status: StatusCode::queued(),
+        stdout: None,
+        stderr: None,
+        compile_output: None,
+        time_ms: None,
+        memory_kb: None,
+        exit_code: None,
+    };
+
+    Ok((axum::http::StatusCode::CREATED, Json(response)))
+}
+
+pub async fn get_submission(
+    Path(token): Path<String>,
+    Extension(store): Extension<Arc<SubmissionStore>>,
+) -> Result<Json<SubmissionResponse>, ApiError> {
+    let sub = store.get(&token).await.map_err(|e| {
+        tracing::error!("Failed to fetch submission {}: {}", token, e);
+        ApiError::InternalError("Failed to fetch submission".to_string())
+    })?;
+
+    match sub {
+        Some(response) => Ok(Json(response)),
+        None => Err(ApiError::NotFound(format!(
+            "submission '{}' not found",
+            token
+        ))),
+    }
+}
+
+pub async fn list_submissions(
+    Extension(store): Extension<Arc<SubmissionStore>>,
+) -> Result<Json<Vec<SubmissionResponse>>, ApiError> {
+    let subs = store.get_all().await.map_err(|e| {
+        tracing::error!("Failed to list submissions: {}", e);
+        ApiError::InternalError("Failed to list submissions".to_string())
+    })?;
+    Ok(Json(subs))
 }
 
 pub async fn submit_batch(
@@ -149,7 +189,6 @@ pub async fn submit_batch(
         Err(err) => return Err(ApiError::BadRequest(err.to_string())),
     };
 
-    // First validate all requests in the batch
     for req in &req_batch.submissions {
         req.validate(&settings)?;
         if registry.get(&req.language).is_none() {
@@ -160,7 +199,6 @@ pub async fn submit_batch(
         }
     }
 
-    // Check queue capacity for the entire batch
     let depth = worker.queue_depth().await.map_err(|e| {
         tracing::error!("Failed to query queue depth: {}", e);
         ApiError::InternalError("Failed to query queue depth".to_string())
@@ -172,13 +210,8 @@ pub async fn submit_batch(
     }
 
     let mut responses = Vec::new();
-    let client_identity = match identity {
-        Some(Extension(id)) => id,
-        None => {
-            let ip = get_client_ip(&headers, connect_info);
-            ClientIdentity::Ip { address: ip }
-        }
-    };
+    let client_identity =
+        sanitize_client_identity(identity, &headers, connect_info, &settings.trusted_proxies);
 
     for req in req_batch.submissions {
         let lang = registry.get(&req.language).unwrap();
@@ -236,7 +269,10 @@ pub async fn submit_batch(
                 });
             }
             Err(e) => {
-                let should_remove = matches!(e, crate::queue::worker::EnqueueError::DefinitivelyNotEnqueued(_));
+                let should_remove = matches!(
+                    e,
+                    crate::queue::worker::EnqueueError::DefinitivelyNotEnqueued(_)
+                );
                 if should_remove {
                     if let Err(remove_err) = store.remove(&token).await {
                         use std::hash::{Hash, Hasher};
@@ -263,6 +299,7 @@ pub async fn submit_batch(
                     ApiError::BadRequest(m) => format!("Bad Request: {}", m),
                     ApiError::NotFound(m) => format!("Not Found: {}", m),
                 };
+
                 responses.push(SubmissionResponse {
                     token,
                     status: StatusCode {
@@ -286,33 +323,4 @@ pub async fn submit_batch(
             submissions: responses,
         }),
     ))
-}
-
-pub async fn get_submission(
-    Extension(store): Extension<Arc<SubmissionStore>>,
-    Path(token): Path<String>,
-) -> Result<Json<SubmissionResponse>, ApiError> {
-    let opt = store
-        .get(&token)
-        .await
-        .map_err(|e| {
-            tracing::error!("Failed to retrieve submission: {}", e);
-            ApiError::InternalError("Failed to retrieve submission".to_string())
-        })?;
-
-    opt.map(Json)
-        .ok_or_else(|| ApiError::NotFound(format!("submission '{}' not found", token)))
-}
-
-pub async fn list_submissions(
-    Extension(store): Extension<Arc<SubmissionStore>>,
-) -> Result<Json<Vec<SubmissionResponse>>, ApiError> {
-    let list = store
-        .get_all()
-        .await
-        .map_err(|e| {
-            tracing::error!("Failed to retrieve submissions: {}", e);
-            ApiError::InternalError("Failed to retrieve submissions".to_string())
-        })?;
-    Ok(Json(list))
 }
