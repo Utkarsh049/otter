@@ -1,4 +1,5 @@
 use anyhow::{Context, Result};
+use std::net::IpAddr;
 
 #[derive(Debug, Clone)]
 pub struct Settings {
@@ -23,6 +24,7 @@ pub struct Settings {
     pub otter_jwt_audience: Option<String>,
     pub max_concurrent_per_user: usize,
     pub allow_loopback_webhooks: bool,
+    pub trusted_proxies: Vec<IpAddr>,
 }
 
 impl Default for Settings {
@@ -49,6 +51,7 @@ impl Default for Settings {
             otter_jwt_audience: None,
             max_concurrent_per_user: 2,
             allow_loopback_webhooks: false,
+            trusted_proxies: Vec::new(),
         }
     }
 }
@@ -59,10 +62,41 @@ impl Settings {
             .unwrap_or("2".into())
             .parse()
             .context("MAX_CONCURRENT_PER_IP must be a number")?;
-        let max_concurrent_per_user = std::env::var("MAX_CONCURRENT_PER_USER")
+        let max_concurrent_per_user = match std::env::var("MAX_CONCURRENT_PER_USER") {
+            Ok(val) => val
+                .parse()
+                .context("MAX_CONCURRENT_PER_USER must be a number")?,
+            Err(_) => 2,
+        };
+
+        let otter_identity_mode = match std::env::var("OTTER_IDENTITY_MODE") {
+            Ok(mode) => {
+                let trimmed = mode.trim();
+                if trimmed.is_empty() {
+                    None
+                } else if trimmed == "jwt" || trimmed == "trusted_header" {
+                    Some(trimmed.to_string())
+                } else {
+                    anyhow::bail!(
+                        "Invalid OTTER_IDENTITY_MODE '{}': must be 'jwt', 'trusted_header', or unset",
+                        trimmed
+                    );
+                }
+            }
+            Err(_) => None,
+        };
+
+        let trusted_proxies = std::env::var("TRUSTED_PROXIES")
+            .or_else(|_| std::env::var("OTTER_TRUSTED_PROXIES"))
             .ok()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(max_concurrent_per_ip);
+            .map(|s| {
+                s.split(',')
+                    .map(|p| p.trim())
+                    .filter(|p| !p.is_empty())
+                    .filter_map(|p| p.parse::<IpAddr>().ok())
+                    .collect()
+            })
+            .unwrap_or_default();
 
         Ok(Self {
             host: std::env::var("HOST").unwrap_or("0.0.0.0".into()),
@@ -121,13 +155,14 @@ impl Settings {
                 .and_then(|s| s.parse().ok()),
             otter_api_key: std::env::var("OTTER_API_KEY").ok(),
             otter_admin_key: std::env::var("OTTER_ADMIN_KEY").ok(),
-            otter_identity_mode: std::env::var("OTTER_IDENTITY_MODE").ok(),
+            otter_identity_mode,
             otter_jwt_secret: std::env::var("OTTER_JWT_SECRET").ok(),
             otter_jwt_issuer: std::env::var("OTTER_JWT_ISSUER").ok(),
             otter_jwt_audience: std::env::var("OTTER_JWT_AUDIENCE").ok(),
             allow_loopback_webhooks: std::env::var("ALLOW_LOOPBACK_WEBHOOKS")
                 .map(|s| s.parse().unwrap_or(false))
                 .unwrap_or(false),
+            trusted_proxies,
         })
     }
 }

@@ -945,6 +945,7 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
+ "sha1_smol",
  "subtle",
  "thiserror 1.0.69",
  "tokio",

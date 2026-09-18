@@ -53,6 +53,7 @@ dotenvy = "0.15"
 nix = { version = "0.29", features = ["resource", "signal", "user", "sched"] }
 libseccomp = "0.3"
 jsonwebtoken = "9"
+sha1_smol = "1"
 
 
 [dev-dependencies]

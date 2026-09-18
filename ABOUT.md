@@ -123,7 +123,7 @@ Otter uses defense in depth: several independent controls are applied so that on
 ```text
 Application controls
     |
-    +-- queue, concurrency, per-IP fairness, rate limiting
+    +-- queue, concurrency, per-IP fairness, per-user fairness, rate limiting
 
 Process controls
     |
@@ -157,10 +157,11 @@ Before a job is executed, Otter limits how much work the API and worker system w
 | `MAX_CONCURRENT` | Maximum number of jobs executing at the same time |
 | `MAX_QUEUE_DEPTH` | Maximum number of jobs waiting in the queue |
 | `MAX_CONCURRENT_PER_IP` | Prevents one client IP from consuming all execution slots |
+| `MAX_CONCURRENT_PER_USER` | Prevents one authenticated user/identity from consuming all execution slots |
 | `RATE_LIMIT_REQUESTS` | Number of requests allowed in a rate-limit window |
 | `RATE_LIMIT_WINDOW_SECONDS` | Length of the rate-limit window |
 
-The global concurrency limit prevents the service from starting unlimited jobs. The per-IP limit provides fair sharing so that one client cannot easily starve other clients.
+The global concurrency limit prevents the service from starting unlimited jobs. The per-IP and per-user limits provide fair sharing so that one client or user cannot easily starve other clients.
 
 Rate limiting is optional and is enabled only when both rate-limit variables are configured.
 
@@ -323,7 +324,7 @@ Loopback webhook access can be enabled for testing with:
 ALLOW_LOOPBACK_WEBHOOKS=true
 ```
 
-This should remain `false` for public deployments unless it is specifically required.
+When enabled, this allows delivery strictly to loopback addresses (`127.0.0.1`, `::1`) for isolated test harnesses. Other blocked destinations (private subnets, link-local, cloud metadata services, multicast, broadcast) remain strictly forbidden. This should remain `false` for public deployments.
 
 ---
 
@@ -399,10 +400,11 @@ If they are unavailable, Otter can fall back to raw execution mode. In fallback 
 ```text
 RLIMIT_CPU
 RLIMIT_AS
-RLIMIT_NPROC
 RLIMIT_FSIZE
 RLIMIT_NOFILE
 ```
+
+> **Note on `RLIMIT_NPROC`:** Process count limits (`RLIMIT_NPROC`) are **not** applied in unjailed raw fallback mode. Without Bubblewrap's unprivileged user namespaces, setting `RLIMIT_NPROC` would constrain the host UID shared by the Otter daemon itself, risking service starvation or crashes. Fork bomb mitigation therefore depends on Bubblewrap.
 
 However, raw mode does not provide the same filesystem, network, and user-namespace isolation as Bubblewrap.
 
@@ -424,10 +426,6 @@ DISABLE_SANDBOX=true
 
 This should not be enabled for public untrusted workloads unless the reduced security is intentional.
 
-Conversely, leaving `DISABLE_SANDBOX` unset allows Otter to perform its automatic capability check. This is why the variable is commented out in `.env.example`.
-
-When Bubblewrap is used inside Docker, the container may need additional permissions to create namespaces and mounts. The deployment documentation discusses this requirement. Extra container privileges should be granted deliberately because they also affect the security of the container itself.
-
 ---
 
 ## Configuration Overview
@@ -445,6 +443,7 @@ The main configuration is loaded from environment variables.
 | `MAX_OUTPUT_BYTES` | Maximum captured output | `1048576` |
 | `MAX_QUEUE_DEPTH` | Maximum queued jobs | `100` |
 | `MAX_CONCURRENT_PER_IP` | Per-IP execution limit | `2` |
+| `MAX_CONCURRENT_PER_USER` | Per-user execution limit | `2` |
 | `DISABLE_SANDBOX` | Force raw execution mode | Automatic detection when unset |
 | `REDIS_URL` | Optional Redis queue/store backend | Unset |
 | `OTTER_API_KEY` | Optional bearer API key(s) | Unset |
@@ -463,7 +462,7 @@ See [`.env.example`](.env.example) for a safe configuration template.
 
 ## API Authentication
 
-If neither API key variable is configured, API routes allow anonymous access. This is convenient for local development but is not appropriate for an exposed production service.
+If neither API key variable is configured and `OTTER_IDENTITY_MODE` is unset, API routes allow anonymous access. If `OTTER_IDENTITY_MODE` is set to `jwt` or `trusted_header`, routes require the corresponding valid identity header (`X-Otter-User-Assertion` or `X-Otter-User-Id`) even when API keys are not configured. Anonymous access is convenient for local development but is not appropriate for an exposed production service.
 
 For production, configure strong secrets such as:
 
@@ -499,96 +498,44 @@ while True:
 
 Expected result: memory-limit failure or process termination according to the configured limits.
 
-### Excessive output
+### Network access attempt
 
 ```python
-while True:
-    print("output" * 1000)
+import socket
+s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+s.connect(("1.1.1.1", 80))
 ```
 
-Expected result: output is bounded and the job cannot write unlimited data.
+Expected result: network failure inside the network namespace when Bubblewrap is enabled.
 
-### Filesystem access
+### Forbidden file access
 
 ```python
-print(open("/etc/passwd").read())
+print(open("/etc/shadow").read())
 ```
 
-Expected result in the full sandbox: the host's sensitive filesystem should not be available in the same way as to a normal host process.
+Expected result: permission failure, missing file, or sandboxed environment view.
 
-### Network access
+### Fork bomb
 
-```python
-import urllib.request
-urllib.request.urlopen("https://example.com")
+```c
+#include <unistd.h>
+int main() {
+    while (1) {
+        fork();
+    }
+    return 0;
+}
 ```
 
-Expected result in the full sandbox: network access should fail because the job runs in an isolated network namespace and the syscall policy restricts network operations.
-
-These tests should be run only against environments you control. They are demonstrations, not a complete security audit.
+Expected result: job fails, exits, or is terminated by Otter rather than exhausting host processes.
 
 ---
 
-## Production Checklist
+## Summary
 
-Before exposing Otter to untrusted users:
+Otter's design centers on three ideas:
 
-1. Run the service as a non-root user.
-2. Confirm Bubblewrap is installed.
-3. Confirm Bubblewrap can create the required namespaces.
-4. Confirm `DISABLE_SANDBOX` is not set to `true` unintentionally.
-5. Check logs for automatic fallback to raw execution.
-6. Configure `OTTER_API_KEY` and `OTTER_ADMIN_KEY` with strong, unique secrets.
-7. Enable request rate limiting.
-8. Keep `ALLOW_LOOPBACK_WEBHOOKS=false`.
-9. Use HTTPS and a reverse proxy where appropriate.
-10. Keep the host operating system, kernel, Docker runtime, Rust dependencies, and language runtimes updated.
-11. Avoid granting unnecessary container privileges.
-12. Monitor CPU, memory, disk usage, queue depth, and failed jobs.
-13. Treat fallback mode as a reduced-security mode.
-
----
-
-## Glossary
-
-| Term | Meaning |
-|---|---|
-| **Kernel** | The core part of an operating system that manages processes, memory, files, and hardware. |
-| **Process** | A running program. |
-| **Syscall** | A request from a user program to the operating-system kernel. |
-| **Namespace** | A restricted view of a system resource. |
-| **User namespace** | Isolates user IDs and prevents root inside the namespace from automatically being host root. |
-| **Network namespace** | Gives a process an isolated network stack. |
-| **Mount namespace** | Gives a process an isolated filesystem/mount view. |
-| **Bubblewrap** | A lightweight tool for creating Linux namespaces and filesystem restrictions. |
-| **`rlimit`** | Linux per-process resource limits. |
-| **`RLIMIT_CPU`** | Maximum CPU time available to a process. |
-| **`RLIMIT_AS`** | Maximum virtual address space. |
-| **`RLIMIT_NPROC`** | Maximum number of processes. |
-| **`RLIMIT_FSIZE`** | Maximum file size a process can create. |
-| **`RLIMIT_NOFILE`** | Maximum open file descriptors. |
-| **Seccomp** | A Linux mechanism for restricting system calls. |
-| **BPF** | A small program evaluated by the kernel; seccomp uses BPF filters. |
-| **`SIGKILL`** | A signal that immediately terminates a process. |
-| **`SIGSYS`** | A signal commonly associated with a forbidden system call. |
-| **cgroups** | Linux controls for grouping, limiting, and accounting for processes. |
-| **`ptrace`** | Linux process tracing and debugging mechanism. |
-| **Fork bomb** | An attack that repeatedly creates processes until resources are exhausted. |
-| **DoS** | Denial of service; making a service unavailable. |
-| **SSRF** | Server-Side Request Forgery; tricking a server into making requests to internal addresses. |
-| **tmpfs** | A temporary filesystem commonly stored in memory. |
-| **RSS** | Resident Set Size; physical memory currently used by a process. |
-| **CPU affinity** | Restricting a process to selected CPU cores. |
-| **Niceness** | A process scheduling-priority adjustment. |
-| **Capability** | A specific permission granted to a Linux process or container. |
-| **Privileged container** | A container granted broad host-related permissions; useful for some sandbox setups but increases container risk. |
-
----
-
-## Further Documentation
-
-- [Security threat model](docs/SECURITY.md)
-- [Deployment guide](docs/DEPLOYMENT.md)
-- [API documentation](docs/API.md)
-- [Environment template](.env.example)
-- [Project README](README.md)
+1. **Untrusted code cannot be trusted by policy alone.** It must be constrained by operating-system and process controls.
+2. **Defense in depth matters.** Limits, seccomp, namespaces, timeouts, and cleanup work together.
+3. **Portability requires intentional compromises.** Otter can run without full virtualization, but fallback mode provides weaker isolation and should only be used when necessary.

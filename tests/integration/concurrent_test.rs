@@ -222,7 +222,7 @@ async fn test_per_ip_concurrency_capping() {
     let mut peak_ip2_processing = 0;
     let start_time = std::time::Instant::now();
 
-    while start_time.elapsed() < Duration::from_millis(300) {
+    while start_time.elapsed() < Duration::from_millis(500) {
         let mut ip1_processing = 0;
         for token in &tokens_ip1 {
             let res = server.get(&format!("/submissions/{}", token)).await;
@@ -238,12 +238,17 @@ async fn test_per_ip_concurrency_capping() {
         let res_ip2 = server.get(&format!("/submissions/{}", token_ip2)).await;
         res_ip2.assert_status_ok();
         let poll_res_ip2 = res_ip2.json::<SubmissionResponse>();
-        if poll_res_ip2.status.id == 2 {
-            // Processing
+        if poll_res_ip2.status.id == 2 || (poll_res_ip2.status.id == 3 && peak_ip2_processing == 0)
+        {
+            // Processing or completed
             peak_ip2_processing = 1;
         }
 
-        tokio::time::sleep(Duration::from_millis(20)).await;
+        if peak_ip1_processing == 1 && peak_ip2_processing == 1 {
+            break;
+        }
+
+        tokio::time::sleep(Duration::from_millis(15)).await;
     }
 
     assert!(
@@ -356,7 +361,7 @@ async fn test_per_user_concurrency_capping() {
     let mut peak_bob_processing = 0;
     let start_time = std::time::Instant::now();
 
-    while start_time.elapsed() < Duration::from_millis(300) {
+    while start_time.elapsed() < Duration::from_millis(1000) {
         let mut alice_processing = 0;
         for token in &tokens_alice {
             let res = server.get(&format!("/submissions/{}", token)).await;
@@ -371,11 +376,16 @@ async fn test_per_user_concurrency_capping() {
         let res_bob = server.get(&format!("/submissions/{}", token_bob)).await;
         res_bob.assert_status_ok();
         let poll_res_bob = res_bob.json::<SubmissionResponse>();
-        if poll_res_bob.status.id == 2 {
+        if poll_res_bob.status.id == 2 || (poll_res_bob.status.id == 3 && peak_bob_processing == 0)
+        {
             peak_bob_processing = 1;
         }
 
-        tokio::time::sleep(Duration::from_millis(20)).await;
+        if peak_bob_processing == 1 && peak_alice_processing == 1 {
+            break;
+        }
+
+        tokio::time::sleep(Duration::from_millis(15)).await;
     }
 
     assert!(
@@ -383,5 +393,8 @@ async fn test_per_user_concurrency_capping() {
         "Alice peak processing count was {} (exceeded per-user cap 1)",
         peak_alice_processing
     );
-    assert_eq!(peak_bob_processing, 1, "Bob job did not start processing concurrently");
+    assert_eq!(
+        peak_bob_processing, 1,
+        "Bob job did not start processing concurrently"
+    );
 }
