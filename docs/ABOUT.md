@@ -53,7 +53,7 @@ Capture stdout, stderr, timing, and memory usage
 Terminate timed-out processes and clean up files
 ```
 
-The main execution implementation is in [`src/execution/engine.rs`](src/execution/engine.rs). API request handling is in [`src/api`](src/api), and background queue processing is in [`src/queue`](src/queue).
+The main execution implementation is in [`src/execution/engine.rs`](../src/execution/engine.rs). API request handling is in [`src/api`](../src/api), and background queue processing is in [`src/queue`](../src/queue).
 
 ---
 
@@ -452,6 +452,11 @@ The main configuration is loaded from environment variables.
 | `REDIS_URL` | Optional Redis queue/store backend | Unset |
 | `OTTER_API_KEY` | Optional bearer API key(s) | Unset |
 | `OTTER_ADMIN_KEY` | Optional admin bearer key | Unset |
+| `OTTER_IDENTITY_MODE` | User identity mode (`jwt` or `trusted_header`) | Unset |
+| `OTTER_JWT_SECRET` | Shared secret for verifying user assertions | Unset |
+| `OTTER_JWT_ISSUER` | Expected JWT issuer (`iss` claim) | Unset |
+| `OTTER_JWT_AUDIENCE` | Expected JWT audience (`aud` claim) | Unset |
+| `TRUSTED_PROXIES` | Trusted reverse proxy IPs for forwarded headers | Unset |
 | `RATE_LIMIT_REQUESTS` | Optional request limit | Unset |
 | `RATE_LIMIT_WINDOW_SECONDS` | Optional rate-limit window | Unset |
 | `ALLOW_LOOPBACK_WEBHOOKS` | Allow loopback webhook targets | `false` |
@@ -460,7 +465,7 @@ The main configuration is loaded from environment variables.
 | `RUST_LOG` | Rust tracing filter | `info` |
 | `OTTER_ENFORCE_NPROC` | Force process-count enforcement | Unset |
 
-See [`.env.example`](.env.example) for a safe configuration template.
+See [`.env.example`](../.env.example) for a safe configuration template.
 
 ---
 
@@ -590,8 +595,9 @@ Before exposing Otter to untrusted users:
 
 ## Further Documentation
 
-- [Security threat model](docs/SECURITY.md)
-- [Deployment guide](docs/DEPLOYMENT.md)
-- [API documentation](docs/API.md)
-- [Environment template](.env.example)
-- [Project README](README.md)
+- [Online IDE setup guide](../SETUP.md)
+- [Security threat model](SECURITY.md)
+- [Deployment guide](DEPLOYMENT.md)
+- [API documentation](API.md)
+- [Environment template](../.env.example)
+- [Project README](../README.md)

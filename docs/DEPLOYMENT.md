@@ -13,38 +13,104 @@ Create a `.env` file in the root of the project to manage environment variables:
 | `HOST` | The binding IP address | `0.0.0.0` |
 | `PORT` | The server port (dynamically assigned on Heroku/Render) | `8080` |
 | `MAX_CONCURRENT` | Limit on background execution queue workers | `8` |
+| `MAX_CONCURRENT_PER_IP` | Maximum concurrent sandboxes allowed per IP address | `2` |
+| `MAX_CONCURRENT_PER_USER` | Maximum concurrent sandboxes allowed per user/identity | `2` |
+| `MAX_QUEUE_DEPTH` | Maximum queue depth limit | `100` |
 | `CPU_LIMIT_MS` | Default CPU time limit per job | `5000` |
 | `WALL_LIMIT_MS` | Default wall-clock execution time limit per job | `10000` |
 | `MEMORY_LIMIT_MB` | Default memory limit per job | `128` |
 | `MAX_OUTPUT_BYTES` | Cap on stdout/stderr output truncation (in bytes) | `1048576` (1MB) |
-| `MAX_QUEUE_DEPTH` | Maximum queue depth limit | `100` |
-| `MAX_CONCURRENT_PER_IP` | Maximum concurrent sandboxes allowed per IP address | `2` |
-| `OTTER_API_KEY` | Comma-separated list of bearer API tokens | None (Disabled) |
-| `OTTER_ADMIN_KEY` | Dedicated bearer API key for administrative routes under `/admin/*` | None (Disabled) |
 | `DISABLE_SANDBOX` | Force raw fallback execution without Bubblewrap | `false` (Auto-detected) |
-| `REDIS_URL` | Connection URL for Redis data persistence (V2) | None (Disabled) |
+| `REDIS_URL` | Connection URL for Redis data persistence and distributed queues | None (Disabled) |
 | `APP_ENV` | Mode of the application (e.g. `production`) | `development` |
 | `LOG_FORMAT` | Format of tracing outputs (e.g. `json`) | `text` |
 | `RATE_LIMIT_REQUESTS` | Allowed requests per client within rate limit window | None (Disabled) |
 | `RATE_LIMIT_WINDOW_SECONDS` | Duration of the rate limit window in seconds | None (Disabled) |
-| `ALLOW_LOOPBACK_WEBHOOKS` | Enable/allow loopback webhooks (for testing) | `false` |
-
-> [!NOTE]
-> **Reverse Proxies & Load Balancers**: When deployed behind a load balancer or reverse proxy (e.g. on Heroku, Render, Railway, or Cloudflare), the built-in rate limiter automatically parses the `X-Forwarded-For` and `X-Real-IP` headers to extract the true client IP address.
+| `OTTER_API_KEY` | Bearer API token(s) for service-to-service access | None (Disabled) |
+| `OTTER_ADMIN_KEY` | Dedicated bearer API key for `/admin/*` routes (metrics & history) | None (Disabled) |
+| `OTTER_IDENTITY_MODE` | User identity mode: `jwt`, `trusted_header`, or unset | None (Disabled) |
+| `OTTER_JWT_SECRET` | Shared secret key for verifying user assertion JWTs | None (Disabled) |
+| `OTTER_JWT_ISSUER` | Expected `iss` claim in user assertion JWTs | None (Disabled) |
+| `OTTER_JWT_AUDIENCE` | Expected `aud` claim in user assertion JWTs | None (Disabled) |
+| `TRUSTED_PROXIES` | Comma-separated list of trusted reverse proxy IPs | None (Disabled) |
+| `ALLOW_LOOPBACK_WEBHOOKS` | Enable loopback webhooks (strictly `127.0.0.1`, `::1` for tests) | `false` |
 
 ---
 
-## 2. Local Docker Deployment
-To run the server or execute tests in a local containerized environment:
+## 2. Authentication, User Identity & Fair Sharing
+
+### A. Service-to-Service Protection: `OTTER_API_KEY` vs. `OTTER_ADMIN_KEY`
+
+* **`OTTER_API_KEY`**: Authenticates your main web application backend. Only clients providing `Authorization: Bearer <OTTER_API_KEY>` can submit code jobs or poll results.
+* **`OTTER_ADMIN_KEY`**: A separate, higher-privileged key specifically for administrative endpoints (`/admin/metrics`, `/admin/submissions`). Use this key for monitoring tools (like Prometheus or your admin dashboard) while keeping normal execution clients restricted to `OTTER_API_KEY`.
+
+### B. Solving the "Shared Backend IP" Problem: `OTTER_JWT_SECRET`
+
+When an online IDE or web service connects to Otter, all requests arrive from the **same IP address** (your application backend). If Otter only throttled by IP address, a single active user could exhaust the entire server's quota, blocking all other users on your platform.
+
+By enabling `OTTER_IDENTITY_MODE=jwt`, your backend signs a small assertion JWT identifying the end-user and forwards it in the `X-Otter-User-Assertion` header.
+
+* Otter verifies the signature using `OTTER_JWT_SECRET`.
+* Otter enforces `MAX_CONCURRENT_PER_USER` independently for each user (`user:<id>`).
+* Otter's rate limiter throttles each user independently, preventing "noisy neighbors" from starving other users.
+
+#### Generating the User Assertion JWT (Backend Examples)
+
+**Node.js / JavaScript (`jsonwebtoken`):**
+```javascript
+import jwt from 'jsonwebtoken';
+
+function createOtterAssertion(userId, tenantId = null) {
+  return jwt.sign(
+    {
+      sub: userId,                        // Required: Unique user ID
+      tenant_id: tenantId,                // Optional: Organization/workspace ID
+      exp: Math.floor(Date.now() / 1000) + 300, // Valid for 5 minutes
+    },
+    process.env.OTTER_JWT_SECRET,
+    { algorithm: 'HS256' }
+  );
+}
+
+// Forward to Otter:
+// headers: {
+//   'Authorization': `Bearer ${process.env.OTTER_API_KEY}`,
+//   'X-Otter-User-Assertion': createOtterAssertion('user_123')
+// }
+```
+
+**Python (`PyJWT`):**
+```python
+import time
+import jwt
+
+def create_otter_assertion(user_id: str, tenant_id: str = None) -> str:
+    payload = {
+        "sub": user_id,
+        "tenant_id": tenant_id,
+        "exp": int(time.time()) + 300,
+    }
+    return jwt.encode(payload, os.environ["OTTER_JWT_SECRET"], algorithm="HS256")
+```
+
+### C. Trusted Proxies (`TRUSTED_PROXIES`)
+
+When deployed behind a reverse proxy (e.g. NGINX, Cloudflare, AWS ALB), client IPs are forwarded in `X-Forwarded-For` or `X-Real-IP`. To prevent untrusted clients from spoofing their IP address, set:
+```env
+TRUSTED_PROXIES=10.0.0.1,172.18.0.1
+```
+Otter will only read forwarded IP headers if the immediate TCP peer matches one of the configured `TRUSTED_PROXIES`.
+
+---
+
+## 3. Local Docker Deployment
 
 ### Build the Production Image
-To build the optimized, lightweight production image (the `runner` stage):
 ```bash
 docker build -f docker/Dockerfile --target runner -t otter:latest .
 ```
 
 ### Run the Container
-To run the production container with secure sandboxing:
 ```bash
 docker run -p 8080:8080 --privileged \
   -e MAX_CONCURRENT=4 \
@@ -54,132 +120,65 @@ docker run -p 8080:8080 --privileged \
   otter:latest
 ```
 > [!IMPORTANT]
-> **Why `--privileged`**: The secure sandbox uses `bubblewrap` to jail user code. Inside Docker, bubblewrap requires `SYS_ADMIN` capability (granted by `--privileged`) to create namespaces and mounts. If run without `--privileged`, Otter automatically detects the restriction and falls back to **un-jailed raw execution mode** (applying standard Linux resource limits but without folder/network virtualization).
+> **Why `--privileged`**: The secure sandbox uses `bubblewrap` to jail user code. Inside Docker, bubblewrap requires `SYS_ADMIN` capability (granted by `--privileged` or `--cap-add=SYS_ADMIN`) to create user, mount, and network namespaces. If run without this capability, Otter automatically detects the restriction and falls back to **un-jailed raw execution mode**.
 
-### Run Tests in the Container (Isolated Test Suite)
-We define a separate `tester` stage in the Dockerfile that includes the full Rust toolchain and compilers. You can run the entire test suite inside an isolated container with a single command:
+### Run Tests in the Container
 ```bash
 docker compose -f docker-compose.test.yml up --build --exit-code-from test-runner
 ```
 
 ---
 
-## 3. Deploying to Heroku
-Otter can be deployed to Heroku using the Docker/Container stack.
+## 4. Deploying to Heroku
+Otter can be deployed to Heroku using the Docker/Container stack:
 
-### 1. Configure Heroku App
-Log in to the Heroku CLI and set the stack to container:
-```bash
-heroku login
-heroku container:login
-heroku create my-otter-engine
-```
-
-### 2. Prepare `heroku.yml`
-Heroku uses a `heroku.yml` manifest file to build and run the Docker container. An example configuration:
-```yaml
-build:
-  docker:
-    web: docker/Dockerfile
-run:
-  web: /usr/local/bin/otter
-```
-
-### 3. Deploy App
-Initialize git (if not already done) and push the code:
-```bash
-git add .
-git commit -m "Deploying to Heroku"
-git push heroku main
-```
-Heroku will automatically build the image using the manifest file and start the web process.
-
-### 4. Scale and Configure Settings
-Set any necessary production environment variables via CLI or Heroku Dashboard:
-```bash
-heroku config:set APP_ENV=production
-heroku config:set LOG_FORMAT=json
-heroku config:set RATE_LIMIT_REQUESTS=60
-heroku config:set RATE_LIMIT_WINDOW_SECONDS=60
-```
-Your application will be live at `https://my-otter-engine.herokuapp.com`.
+1. **Configure Heroku App**:
+   ```bash
+   heroku login
+   heroku container:login
+   heroku create my-otter-engine
+   heroku stack:set container
+   ```
+2. **Deploy App**:
+   ```bash
+   git push heroku main
+   ```
+3. **Configure Environment Variables**:
+   ```bash
+   heroku config:set APP_ENV=production
+   heroku config:set LOG_FORMAT=json
+   heroku config:set OTTER_API_KEY=your_secure_api_key
+   ```
 
 ---
 
-## 4. Deploying to Railway
-Railway provides a simple, direct-from-git deployment model.
+## 5. Deploying to Railway & Render
 
-### 1. Link Repository
-1. Log in to the [Railway Console](https://railway.app/).
-2. Select **New Project** -> **Deploy from GitHub repo**.
-3. Choose the `otter` repository.
-
-### 2. Configure Service
-1. Railway will automatically detect the root `Dockerfile` (or `docker/Dockerfile` depending on structure).
-2. Go to **Settings** -> under **Build**, set the Dockerfile path to `docker/Dockerfile`.
-3. Go to **Variables** -> Add environment variables (`APP_ENV=production`, `LOG_FORMAT=json`, etc.).
-4. Click **Deploy**.
+Both Railway and Render automatically detect `docker/Dockerfile`.
+- Set **Docker Path** to `docker/Dockerfile`.
+- Set **Health Check Path** to `/health`.
+- Configure your environment variables (`OTTER_API_KEY`, `OTTER_JWT_SECRET`, etc.).
 
 ---
 
-## 5. Deploying to Render
-Render can deploy Docker-based applications as Web Services.
+## 6. Sandbox Troubleshooting (Unprivileged User Namespaces)
 
-### 1. Create a New Web Service
-1. Log in to the [Render Dashboard](https://render.com/).
-2. Click **New** -> **Web Service**.
-3. Connect your GitHub repository.
-
-### 2. Configure Settings
-1. Set the runtime environment to **Docker**.
-2. Expand the **Advanced** section:
-   - Set **Docker Path** to `docker/Dockerfile`.
-   - Set **Health Check Path** to `/health` (allows Render to verify server startup before routing traffic).
-   - Add environment variables under **Environment Variables**.
-3. Select the appropriate instance plan (a minimum of 512MB RAM is recommended).
-4. Click **Create Web Service**.
-
----
-
-## 6. Deploying to DigitalOcean App Platform
-DigitalOcean App Platform supports direct container builds.
-
-### 1. Launch New App
-1. Log in to the [DigitalOcean Cloud Console](https://cloud.digitalocean.com/).
-2. Click **Apps** -> **Create App**.
-3. Link your GitHub account and select the `otter` repository.
-
-### 2. Configure Resources
-1. Select the component to edit (defaults to Web Service).
-2. Change the build source settings:
-   - Verify that DO auto-detects the Dockerfile. Set the Dockerfile path explicitly to `docker/Dockerfile`.
-3. Set the HTTP Port to `8080`.
-4. Add environment variables under the **Environment Variables** tab.
-5. Click **Next** and deploy the application.
-
----
-
-## 7. Sandbox Troubleshooting (Unprivileged User Namespaces)
-Because the sandbox utilizes `bubblewrap` (`bwrap`) to jail execution, the host kernel must support and allow unprivileged user namespaces.
+Because the sandbox utilizes `bubblewrap` (`bwrap`) to jail execution, the host kernel must support unprivileged user namespaces.
 
 To check if your host OS allows this, run:
 ```bash
 sysctl kernel.unprivileged_userns_clone
 ```
-
-If it returns `1`, unprivileged user namespaces are enabled.
-If it returns `0`, you can temporarily enable it by running:
+If it returns `1`, namespaces are enabled. To enable temporarily:
 ```bash
 sudo sysctl -w kernel.unprivileged_userns_clone=1
 ```
-To persist this setting, add `kernel.unprivileged_userns_clone=1` to `/etc/sysctl.conf`.
 
-### Automatic Fallback on Restricted Platforms (e.g., Heroku, Render)
-On shared container hosting platforms (such as Heroku or some Render plans) where `CLONE_NEWUSER` (unprivileged namespaces) is blocked at the hypervisor level, bubblewrap will fail to initialize. 
-
-Otter automatically detects namespace support at startup:
-* If namespaces are unsupported, Otter **gracefully falls back to un-jailed raw mode** (executing processes directly on the host rather than inside `bwrap`).
-* Even in raw fallback mode, Otter **still enforces all process limits** (`RLIMIT_CPU`, `RLIMIT_AS`, `RLIMIT_NPROC`, `RLIMIT_FSIZE`, `RLIMIT_NOFILE`, and low CPU priority) using standard Unix system calls, protecting the host system from resource exhaustion.
-* You can also explicitly force raw fallback mode by setting the environment variable:
-  `DISABLE_SANDBOX=true`
-
+### Automatic Fallback on Restricted Platforms
+On platforms where `CLONE_NEWUSER` is blocked at the hypervisor level, Otter automatically detects namespace support at startup:
+* Otter **gracefully falls back to un-jailed raw mode** (executing processes on the host rather than inside `bwrap`).
+* In raw fallback mode, Otter enforces `RLIMIT_CPU`, `RLIMIT_AS`, `RLIMIT_FSIZE`, `RLIMIT_NOFILE`, and low CPU priority using standard Unix system calls. Process limits (`RLIMIT_NPROC`) are excluded in unjailed mode to avoid constraining the host daemon process.
+* To explicitly force raw fallback mode:
+  ```env
+  DISABLE_SANDBOX=true
+  ```

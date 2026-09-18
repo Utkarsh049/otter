@@ -349,3 +349,33 @@ When rate limiting (`RATE_LIMIT_REQUESTS` and `RATE_LIMIT_WINDOW_SECONDS`) is en
   Retry-After: 42
   ```
 * Concurrent worker execution limits are enforced per user (`MAX_CONCURRENT_PER_USER`) and globally (`MAX_CONCURRENT`), preventing any individual user from exhausting worker capacity.
+
+#### Creating the Assertion JWT (Backend Example)
+
+To authenticate individual users through your backend, sign a short-lived token using your shared `OTTER_JWT_SECRET`:
+
+**Node.js Example:**
+```javascript
+import jwt from 'jsonwebtoken';
+
+function getUserAssertion(userId, tenantId = null) {
+  return jwt.sign(
+    {
+      sub: userId,
+      tenant_id: tenantId,
+      exp: Math.floor(Date.now() / 1000) + 300, // 5 min TTL
+    },
+    process.env.OTTER_JWT_SECRET,
+    { algorithm: 'HS256' }
+  );
+}
+```
+
+Attach the resulting token to your request:
+```http
+POST /submissions HTTP/1.1
+Host: localhost:8080
+Authorization: Bearer <OTTER_API_KEY>
+X-Otter-User-Assertion: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
+Content-Type: application/json
+```

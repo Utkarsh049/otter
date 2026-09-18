@@ -149,8 +149,20 @@ All configuration is via environment variables. Copy `.env.example` to `.env` an
 | `RATE_LIMIT_REQUESTS` | unset | Requests allowed per client/user identity within window |
 | `RATE_LIMIT_WINDOW_SECONDS` | unset | Duration of rate limiting window |
 | `ALLOW_LOOPBACK_WEBHOOKS` | `false` | Enable/allow loopback webhooks (for testing) |
+| `TRUSTED_PROXIES` | unset | Comma-separated list of trusted reverse proxy IPs |
 | `RUST_LOG` | `info` | Log level (error/warn/info/debug) |
 | `REDIS_URL` | unset | Redis URL for database and queue scaling |
+
+---
+
+## Documentation
+
+- **[IDE Setup & Integration Guide](SETUP.md)** — Architectural patterns, polling vs. webhook implementations, and Docker Compose configs for online IDE backends.
+- **[About Otter & Deep Dive](docs/ABOUT.md)** — How the sandbox works, defense-in-depth model, and technical comparisons.
+- **[API Reference](docs/API.md)** — Complete REST endpoints, request/response models, and assertion headers.
+- **[Deployment Guide](docs/DEPLOYMENT.md)** — Production configuration, Docker, Heroku, Railway, Render, and user identity setup.
+- **[Security Model](docs/SECURITY.md)** — Threat boundaries, isolation primitives, and hardening checklist.
+- **[Adding a Language](docs/ADDING_LANGUAGE.md)** — Step-by-step guide for registering new compilers and runtimes.
 
 ---
 
@@ -216,7 +228,7 @@ Otter uses five independent isolation layers per submission:
 
 See [`docs/SECURITY.md`](docs/SECURITY.md) for threat model and known limitations.
 
-To report a vulnerability: see [`SECURITY.md`](SECURITY.md).
+To report a vulnerability: see [`docs/SECURITY.md`](docs/SECURITY.md).
 
 ---
 

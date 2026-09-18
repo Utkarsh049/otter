@@ -319,15 +319,14 @@ When querying submission results (either via Webhook or Polling), Otter returns 
 
 | ID | Description | Meaning |
 | :---: | :--- | :--- |
-| `1` | `Queued` | Waiting in the worker queue |
-| `2` | `Processing` | Currently running inside the sandbox |
-| `3` | `Accepted` | Completed with exit code 0 |
-| `4` | `Wrong Answer` | Non-zero exit code or execution mismatch |
-| `5` | `Time Limit Exceeded` | Killed by CPU or wall-clock timeout |
-| `6` | `Memory Limit Exceeded` | Exceeded configured virtual or physical RAM limit |
-| `7` | `Runtime Error` | Crashed due to unhandled signal/exception (SIGSEGV, etc.) |
+| `1` | `Queued` | Job is waiting in the worker queue |
+| `2` | `Processing` | Job is actively compiling or running in the sandbox |
+| `3` | `Accepted` | Execution finished cleanly with exit code 0 |
+| `4` | `Time Limit Exceeded` | Exceeded CPU time limit (`RLIMIT_CPU`) or wall-clock timeout |
+| `5` | `Memory Limit Exceeded` | Exceeded peak memory limit |
+| `6` | `Compilation Error` | Language compiler (gcc/g++) exited with non-zero status |
+| `7` | `Runtime Error` | Non-zero exit code, unhandled signal/exception, or seccomp violation |
 | `8` | `Internal Error` | Sandbox initialization or server infrastructure error |
-| `11` | `Compilation Error` | Language compiler (gcc/g++) returned errors |
 
 ---
 
