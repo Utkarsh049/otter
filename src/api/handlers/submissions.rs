@@ -294,9 +294,10 @@ pub async fn submit_batch(
                     ApiError::TooManyRequests(m) => format!("Rejected: {}", m),
                     ApiError::InternalError(m) => {
                         tracing::error!("Internal error during batch submission enqueue: {}", m);
-                        "Internal error".to_string()
+                        "Internal Error: Failed to enqueue submission".to_string()
                     }
-                    _ => "Failed to enqueue submission".to_string(),
+                    ApiError::BadRequest(m) => format!("Bad Request: {}", m),
+                    ApiError::NotFound(m) => format!("Not Found: {}", m),
                 };
 
                 responses.push(SubmissionResponse {
