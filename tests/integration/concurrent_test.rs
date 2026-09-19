@@ -167,8 +167,13 @@ async fn test_per_ip_concurrency_capping() {
     // 1. Build server with max_concurrent = 4, max_concurrent_per_ip = 1
     let mut settings = get_test_settings(4);
     settings.max_concurrent_per_ip = 1; // 1 job per IP concurrently
+    settings.trusted_proxies = vec!["127.0.0.1".parse().unwrap()];
     let app = build_router(settings);
-    let server = TestServer::new(app).unwrap();
+    let config = axum_test::TestServerConfig {
+        transport: Some(axum_test::Transport::HttpRandomPort),
+        ..Default::default()
+    };
+    let server = TestServer::new_with_config(app.into_make_service_with_connect_info::<std::net::SocketAddr>(), config).unwrap();
 
     // 2. Submit 2 long-running jobs (sleep 200ms each) from IP "1.1.1.1"
     let mut tokens_ip1 = Vec::new();

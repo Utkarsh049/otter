@@ -17,11 +17,11 @@ pub enum ClientIdentity {
 
 fn encode_component(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
-    for b in s.bytes() {
-        match b {
-            b'%' => out.push_str("%25"),
-            b':' => out.push_str("%3A"),
-            _ => out.push(b as char),
+    for ch in s.chars() {
+        match ch {
+            '%' => out.push_str("%25"),
+            ':' => out.push_str("%3A"),
+            _ => out.push(ch),
         }
     }
     out
@@ -53,6 +53,45 @@ impl ClientIdentity {
 
     pub fn is_user(&self) -> bool {
         matches!(self, ClientIdentity::User { .. })
+    }
+}
+
+pub fn normalize_identity_key(identity_key: &str, configured_api_keys: &[String]) -> String {
+    if let Some(key_val) = identity_key.strip_prefix("key:") {
+        // Modern 64-character SHA-256 hex string: already normalized
+        if key_val.len() == 64 && key_val.chars().all(|c| c.is_ascii_hexdigit()) {
+            return identity_key.to_string();
+        }
+
+        // Check if key_val matches the legacy SHA-1 of any configured key
+        for configured in configured_api_keys {
+            let mut s1 = sha1_smol::Sha1::new();
+            s1.update(configured.as_bytes());
+            if s1.digest().to_string() == key_val {
+                use sha2::{Digest, Sha256};
+                let mut s2 = Sha256::new();
+                s2.update(configured.as_bytes());
+                return format!("key:{:x}", s2.finalize());
+            }
+        }
+
+        // Check if key_val matches any configured key directly (legacy raw key)
+        for configured in configured_api_keys {
+            if configured == key_val {
+                use sha2::{Digest, Sha256};
+                let mut s2 = Sha256::new();
+                s2.update(configured.as_bytes());
+                return format!("key:{:x}", s2.finalize());
+            }
+        }
+
+        // Unrecognized unhashed key: hash with SHA-256 to ensure consistent length and format
+        use sha2::{Digest, Sha256};
+        let mut s2 = Sha256::new();
+        s2.update(key_val.as_bytes());
+        format!("key:{:x}", s2.finalize())
+    } else {
+        identity_key.to_string()
     }
 }
 
@@ -151,18 +190,7 @@ pub fn extract_ip(
                 peer_ip
             }
         }
-        None => headers
-            .get("x-forwarded-for")
-            .and_then(|h| h.to_str().ok())
-            .and_then(|s| s.split(',').next())
-            .and_then(|s| s.trim().parse::<IpAddr>().ok())
-            .or_else(|| {
-                headers
-                    .get("x-real-ip")
-                    .and_then(|h| h.to_str().ok())
-                    .and_then(|s| s.trim().parse::<IpAddr>().ok())
-            })
-            .unwrap_or_else(|| "127.0.0.1".parse().unwrap()),
+        None => "127.0.0.1".parse().unwrap(),
     }
 }
 
@@ -203,6 +231,14 @@ mod tests {
     }
 
     #[test]
+    fn test_encode_component_utf8() {
+        assert_eq!(encode_component("user:123"), "user%3A123");
+        assert_eq!(encode_component("100%"), "100%25");
+        assert_eq!(encode_component("🦀_user"), "🦀_user");
+        assert_eq!(encode_component("用户:1"), "用户%3A1");
+    }
+
+    #[test]
     fn test_colon_in_tenant_or_subject_does_not_collide() {
         let u1 = ClientIdentity::User {
             subject: "user2".into(),
@@ -214,6 +250,27 @@ mod tests {
         };
         assert_ne!(u1.rate_limit_key(), u2.rate_limit_key());
         assert_ne!(u1.concurrency_key(), u2.concurrency_key());
+    }
+
+    #[test]
+    fn test_normalize_identity_key_legacy_upgrade() {
+        let configured = vec!["client_key".to_string(), "admin_key".to_string()];
+        
+        // Legacy raw key
+        let norm_raw = normalize_identity_key("key:client_key", &configured);
+        assert_eq!(norm_raw, "key:d9ee725310e983561b0447bc0f5cffc57161c33f3a64051568e24fc3fc8a5d18");
+
+        // Legacy SHA-1 hash of client_key
+        let norm_sha1 = normalize_identity_key("key:ee369845b98b65e65abb99e72a3bec006a78d3e8", &configured);
+        assert_eq!(norm_sha1, "key:d9ee725310e983561b0447bc0f5cffc57161c33f3a64051568e24fc3fc8a5d18");
+
+        // Modern SHA-256 hash stays identical
+        let norm_sha256 = normalize_identity_key("key:d9ee725310e983561b0447bc0f5cffc57161c33f3a64051568e24fc3fc8a5d18", &configured);
+        assert_eq!(norm_sha256, "key:d9ee725310e983561b0447bc0f5cffc57161c33f3a64051568e24fc3fc8a5d18");
+
+        // User or IP keys are untouched
+        assert_eq!(normalize_identity_key("user:123", &configured), "user:123");
+        assert_eq!(normalize_identity_key("ip:127.0.0.1", &configured), "ip:127.0.0.1");
     }
 
     #[test]
@@ -318,6 +375,17 @@ mod tests {
         let res = verify_jwt_assertion(&token, "secret-2", None, None);
         assert!(matches!(res, Err(IdentityError::InvalidJwt(_))));
     }
+    #[test]
+    fn test_extract_ip_none_connect_info_fallback() {
+        let mut headers = HeaderMap::new();
+        headers.insert("x-forwarded-for", "203.0.113.195".parse().unwrap());
+        headers.insert("x-real-ip", "203.0.113.195".parse().unwrap());
+        let trusted_proxies = vec!["10.0.0.1".parse().unwrap()];
+
+        let ip = extract_ip(&headers, None, &trusted_proxies);
+        assert_eq!(ip, "127.0.0.1".parse::<IpAddr>().unwrap());
+    }
+
     #[test]
     fn test_extract_ip_untrusted_proxy_ignored() {
         let mut headers = HeaderMap::new();

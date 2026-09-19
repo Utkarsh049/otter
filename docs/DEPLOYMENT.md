@@ -81,6 +81,7 @@ function createOtterAssertion(userId, tenantId = null) {
 
 **Python (`PyJWT`):**
 ```python
+import os
 import time
 import jwt
 
@@ -130,25 +131,41 @@ docker compose -f docker-compose.test.yml up --build --exit-code-from test-runne
 ---
 
 ## 4. Deploying to Heroku
-Otter can be deployed to Heroku using the Docker/Container stack:
+Otter can be deployed to Heroku using the Docker/Container stack. Because Otter's multi-stage Dockerfile is located at `docker/Dockerfile`, deploy using either the `heroku.yml` manifest or the Heroku Container CLI:
 
-1. **Configure Heroku App**:
+### Option A: Using `heroku.yml` Manifest (Recommended for Git Deploys)
+1. **Create `heroku.yml` in repository root**:
+   ```yaml
+   build:
+     docker:
+       web:
+         dockerfile: docker/Dockerfile
+         target: runner
+   ```
+2. **Configure and Deploy**:
    ```bash
    heroku login
-   heroku container:login
    heroku create my-otter-engine
    heroku stack:set container
-   ```
-2. **Deploy App**:
-   ```bash
    git push heroku main
    ```
-3. **Configure Environment Variables**:
-   ```bash
-   heroku config:set APP_ENV=production
-   heroku config:set LOG_FORMAT=json
-   heroku config:set OTTER_API_KEY=your_secure_api_key
-   ```
+
+### Option B: Using Heroku Container CLI
+Push and release the multi-stage image directly from your local terminal:
+```bash
+heroku login
+heroku container:login
+heroku create my-otter-engine
+heroku container:push web --context-path . -f docker/Dockerfile
+heroku container:release web
+```
+
+### Configure Environment Variables
+```bash
+heroku config:set APP_ENV=production
+heroku config:set LOG_FORMAT=json
+heroku config:set OTTER_API_KEY=your_secure_api_key
+```
 
 ---
 

@@ -24,7 +24,7 @@ async fn test_health_endpoint() {
 
     let body = response.json::<serde_json::Value>();
     assert_eq!(body["status"], "ok");
-    assert_eq!(body["version"], "0.1.0");
+    assert_eq!(body["version"], "1.0.0");
 }
 
 #[tokio::test]

@@ -32,10 +32,15 @@ fn sanitize_client_identity(
 ) -> ClientIdentity {
     match identity {
         Some(Extension(ClientIdentity::ApiKey { key_id })) => {
-            let mut hasher = sha1_smol::Sha1::new();
-            hasher.update(key_id.as_bytes());
-            ClientIdentity::ApiKey {
-                key_id: hasher.digest().to_string(),
+            if key_id.len() == 64 && key_id.chars().all(|c| c.is_ascii_hexdigit()) {
+                ClientIdentity::ApiKey { key_id }
+            } else {
+                use sha2::{Digest, Sha256};
+                let mut hasher = Sha256::new();
+                hasher.update(key_id.as_bytes());
+                ClientIdentity::ApiKey {
+                    key_id: format!("{:x}", hasher.finalize()),
+                }
             }
         }
         Some(Extension(id)) => id,
@@ -151,7 +156,15 @@ pub async fn get_submission(
     Extension(store): Extension<Arc<SubmissionStore>>,
 ) -> Result<Json<SubmissionResponse>, ApiError> {
     let sub = store.get(&token).await.map_err(|e| {
-        tracing::error!("Failed to fetch submission {}: {}", token, e);
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        token.hash(&mut hasher);
+        let token_hash = hasher.finish();
+        tracing::error!(
+            token_hash = %token_hash,
+            error = %e,
+            "Failed to fetch submission from store"
+        );
         ApiError::InternalError("Failed to fetch submission".to_string())
     })?;
 

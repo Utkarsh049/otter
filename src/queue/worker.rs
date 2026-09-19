@@ -57,6 +57,39 @@ pub struct Worker {
     allow_loopback: bool,
 }
 
+async fn requeue_job_with_retries(
+    client: &redis::Client,
+    conn: &mut redis::aio::MultiplexedConnection,
+    store: &SubmissionStore,
+    token: &str,
+    json_str: &str,
+) -> bool {
+    use redis::AsyncCommands;
+    if conn.rpush::<_, _, ()>("queue:submissions", json_str).await.is_ok() {
+        return true;
+    }
+    for retry in 0..5 {
+        tokio::time::sleep(Duration::from_millis(100 * (1 << retry))).await;
+        let conn_res = tokio::time::timeout(
+            Duration::from_secs(2),
+            client.get_multiplexed_tokio_connection(),
+        )
+        .await;
+        if let Ok(Ok(mut retry_conn)) = conn_res {
+            if retry_conn.rpush::<_, _, ()>("queue:submissions", json_str).await.is_ok() {
+                *conn = retry_conn;
+                return true;
+            }
+        }
+    }
+    tracing::error!(
+        token = %token,
+        "CRITICAL: Failed to requeue job to Redis after retries; marking internal error"
+    );
+    let _ = store.update_status(token, StatusCode::internal_error()).await;
+    false
+}
+
 fn is_blocklisted(ip: std::net::IpAddr) -> bool {
     match ip {
         std::net::IpAddr::V4(ipv4) => {
@@ -210,6 +243,18 @@ impl Worker {
             let max_concurrent_per_ip = settings.max_concurrent_per_ip;
             let max_concurrent_per_user = settings.max_concurrent_per_user;
             let in_flight = in_flight.clone();
+            let configured_api_keys: Arc<Vec<String>> = Arc::new(
+                settings
+                    .otter_api_key
+                    .as_deref()
+                    .map(|s| {
+                        s.split(',')
+                            .map(|k| k.trim().to_string())
+                            .filter(|k| !k.is_empty())
+                            .collect()
+                    })
+                    .unwrap_or_default(),
+            );
 
             // Spawn max_concurrent worker loops
             for _ in 0..settings.max_concurrent {
@@ -218,6 +263,7 @@ impl Worker {
                 let registry = registry.clone();
                 let slots = slots.clone();
                 let in_flight = in_flight.clone();
+                let configured_api_keys = configured_api_keys.clone();
 
                 tokio::spawn(async move {
                     loop {
@@ -259,7 +305,13 @@ impl Worker {
 
                                     let identity_key = job
                                         .identity_key
-                                        .clone()
+                                        .as_deref()
+                                        .map(|k| {
+                                            crate::api::identity::normalize_identity_key(
+                                                k,
+                                                &configured_api_keys,
+                                            )
+                                        })
                                         .unwrap_or_else(|| format!("ip:{}", job.ip));
 
                                     let max_limit = if identity_key.starts_with("user:")
@@ -276,13 +328,18 @@ impl Worker {
 
                                     let acquire_script = redis::Script::new(
                                         r#"
-                                    local current = redis.call('INCR', KEYS[1])
-                                    if current > tonumber(ARGV[1]) then
-                                        redis.call('DECR', KEYS[1])
-                                        return 0
-                                    else
+                                    local count = redis.call('SCARD', KEYS[1])
+                                    local is_member = redis.call('SISMEMBER', KEYS[1], ARGV[3])
+                                    if is_member == 1 then
                                         redis.call('EXPIRE', KEYS[1], tonumber(ARGV[2]))
                                         return 1
+                                    end
+                                    if count < tonumber(ARGV[1]) then
+                                        redis.call('SADD', KEYS[1], ARGV[3])
+                                        redis.call('EXPIRE', KEYS[1], tonumber(ARGV[2]))
+                                        return 1
+                                    else
+                                        return 0
                                     end
                                 "#,
                                     );
@@ -291,6 +348,7 @@ impl Worker {
                                         .key(&redis_concurrency_key)
                                         .arg(max_limit)
                                         .arg(ttl_secs)
+                                        .arg(&job.token)
                                         .invoke_async(&mut conn)
                                         .await;
 
@@ -299,30 +357,82 @@ impl Worker {
                                             struct RedisPermitGuard {
                                                 client: redis::Client,
                                                 key: String,
+                                                token: String,
                                             }
                                             impl Drop for RedisPermitGuard {
                                                 fn drop(&mut self) {
                                                     let client = self.client.clone();
                                                     let key = self.key.clone();
+                                                    let token = self.token.clone();
                                                     tokio::spawn(async move {
-                                                        if let Ok(mut c) = client
-                                                            .get_multiplexed_tokio_connection()
-                                                            .await
-                                                        {
-                                                            let release_script = redis::Script::new(
-                                                                r#"
-                                                            local current = redis.call('DECR', KEYS[1])
-                                                            if current <= 0 then
-                                                                redis.call('DEL', KEYS[1])
-                                                            end
-                                                            return 0
-                                                        "#,
+                                                        let release_script = redis::Script::new(
+                                                            r#"
+                                                        redis.call('SREM', KEYS[1], ARGV[1])
+                                                        local remaining = redis.call('SCARD', KEYS[1])
+                                                        if remaining == 0 then
+                                                            redis.call('DEL', KEYS[1])
+                                                        end
+                                                        return 0
+                                                    "#,
+                                                        );
+
+                                                        let mut released = false;
+                                                        for attempt in 0..5 {
+                                                            if attempt > 0 {
+                                                                tokio::time::sleep(tokio::time::Duration::from_millis(50 * (1 << attempt))).await;
+                                                            }
+
+                                                            let conn_res = tokio::time::timeout(
+                                                                Duration::from_secs(2),
+                                                                client.get_multiplexed_tokio_connection(),
+                                                            )
+                                                            .await;
+
+                                                            let mut c = match conn_res {
+                                                                Ok(Ok(c)) => c,
+                                                                Ok(Err(e)) => {
+                                                                    tracing::warn!(
+                                                                        attempt = attempt + 1,
+                                                                        error = %e,
+                                                                        "Failed to get Redis connection to release concurrency permit, retrying"
+                                                                    );
+                                                                    continue;
+                                                                }
+                                                                Err(_) => {
+                                                                    tracing::warn!(
+                                                                        attempt = attempt + 1,
+                                                                        "Timed out getting Redis connection to release concurrency permit, retrying"
+                                                                    );
+                                                                    continue;
+                                                                }
+                                                            };
+
+                                                            match release_script
+                                                                .key(&key)
+                                                                .arg(&token)
+                                                                .invoke_async::<()>(&mut c)
+                                                                .await
+                                                            {
+                                                                Ok(()) => {
+                                                                    released = true;
+                                                                    break;
+                                                                }
+                                                                Err(e) => {
+                                                                    tracing::warn!(
+                                                                        attempt = attempt + 1,
+                                                                        error = %e,
+                                                                        "Failed to execute release script in Redis, retrying"
+                                                                    );
+                                                                }
+                                                            }
+                                                        }
+
+                                                        if !released {
+                                                            tracing::error!(
+                                                                key = %key,
+                                                                token = %token,
+                                                                "Failed to release Redis concurrency permit after retries; will expire via TTL"
                                                             );
-                                                            let _: Result<(), redis::RedisError> =
-                                                                release_script
-                                                                    .key(&key)
-                                                                    .invoke_async(&mut c)
-                                                                    .await;
                                                         }
                                                     });
                                                 }
@@ -330,6 +440,7 @@ impl Worker {
                                             let _redis_permit = RedisPermitGuard {
                                                 client: client.clone(),
                                                 key: redis_concurrency_key,
+                                                token: job.token.clone(),
                                             };
 
                                             let _ = store
@@ -546,11 +657,37 @@ impl Worker {
 
                                             in_flight.fetch_sub(1, Ordering::Relaxed);
                                         }
-                                        _ => {
-                                            // Push job back onto queue (RPUSH) and sleep
-                                            let _: Result<(), redis::RedisError> =
-                                                conn.rpush("queue:submissions", json_str).await;
+                                        Ok(_) => {
+                                            // Quota limit reached for this identity; requeue and back off
+                                            let ok = requeue_job_with_retries(
+                                                &client,
+                                                &mut conn,
+                                                &store,
+                                                &job.token,
+                                                &json_str,
+                                            )
+                                            .await;
                                             tokio::time::sleep(Duration::from_millis(50)).await;
+                                            if !ok {
+                                                break;
+                                            }
+                                        }
+                                        Err(redis_err) => {
+                                            tracing::error!(
+                                                error = %redis_err,
+                                                token = %job.token,
+                                                "Redis error during permit acquisition; recovering job..."
+                                            );
+                                            requeue_job_with_retries(
+                                                &client,
+                                                &mut conn,
+                                                &store,
+                                                &job.token,
+                                                &json_str,
+                                            )
+                                            .await;
+                                            // Reconnect worker connection on next loop iteration
+                                            break;
                                         }
                                     }
                                 }
@@ -831,7 +968,8 @@ impl Worker {
                 ));
             }
 
-            Ok(())        } else {
+            Ok(())
+        } else {
             // Existing in-memory logic
             let current = self.queue_depth.load(Ordering::Relaxed);
             if current >= self.max_queue_depth {

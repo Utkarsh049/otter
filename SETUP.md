@@ -82,9 +82,12 @@ services:
       # Persistence & Queue
       - REDIS_URL=redis://redis:6379
       - ALLOW_LOOPBACK_WEBHOOKS=false
-    # Bubblewrap requires user namespace or SYS_ADMIN capability
-    cap_add:
-      - SYS_ADMIN
+    # Bubblewrap uses unprivileged user namespaces by default.
+    # cap_add: [SYS_ADMIN] is only needed if your host kernel disables unprivileged
+    # user namespaces (sysctl kernel.unprivileged_userns_clone=0).
+    # On restricted container platforms (AWS ECS/Fargate, Google Cloud Run), leave this commented out.
+    # cap_add:
+    #   - SYS_ADMIN
     depends_on:
       - redis
     networks:
@@ -103,6 +106,9 @@ networks:
   internal-net:
     driver: bridge
 ```
+
+> [!NOTE]
+> **Kernel Namespaces vs `SYS_ADMIN`**: Otter uses `bwrap` (Bubblewrap) which leverages unprivileged user namespaces by default. On modern Linux and standard Docker Engine installations, `cap_add: [SYS_ADMIN]` is unnecessary. Only uncomment `cap_add: [SYS_ADMIN]` if your host OS disables unprivileged user namespace cloning (`kernel.unprivileged_userns_clone=0`).
 
 To build and start the service:
 ```bash
@@ -230,7 +236,7 @@ app.post('/api/run', async (req, res) => {
 
 In this pattern:
 1. The browser connects to your backend via WebSocket.
-2. The user clicks "Run". The backend submits the job with a `webhook_url` pointing to an internal endpoint on your backend.
+2. The user clicks "Run". The backend submits the job with a `webhook_url` pointing to an internal endpoint on your backend and returns `{ token }`. The browser registers the token over the WebSocket (`{ type: 'SUBSCRIBE', token }`).
 3. Otter executes the code and `POST`s the final result to your backend webhook.
 4. Your backend immediately pushes the output down the active WebSocket to the browser terminal.
 
@@ -252,6 +258,18 @@ const wss = new WebSocketServer({ server, path: '/ws' });
 const activeSockets = new Map();
 
 wss.on('connection', (ws) => {
+  // Associate the client's WebSocket with their submission token
+  ws.on('message', (message) => {
+    try {
+      const data = JSON.parse(message);
+      if (data.type === 'SUBSCRIBE' && data.token) {
+        activeSockets.set(data.token, ws);
+      }
+    } catch (err) {
+      console.error('Failed to parse WebSocket message:', err);
+    }
+  });
+
   ws.on('close', () => {
     for (const [token, clientWs] of activeSockets.entries()) {
       if (clientWs === ws) activeSockets.delete(token);
@@ -281,6 +299,11 @@ app.post('/api/run-async', async (req, res) => {
       webhook_url: webhookUrl,
     }),
   });
+
+  if (!submitRes.ok) {
+    const errData = await submitRes.json();
+    return res.status(submitRes.status).json(errData);
+  }
 
   const { token } = await submitRes.json();
   res.json({ token });

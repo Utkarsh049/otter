@@ -86,17 +86,21 @@ impl Settings {
             Err(_) => None,
         };
 
-        let trusted_proxies = std::env::var("TRUSTED_PROXIES")
+        let trusted_proxies = match std::env::var("TRUSTED_PROXIES")
             .or_else(|_| std::env::var("OTTER_TRUSTED_PROXIES"))
-            .ok()
-            .map(|s| {
-                s.split(',')
-                    .map(|p| p.trim())
-                    .filter(|p| !p.is_empty())
-                    .filter_map(|p| p.parse::<IpAddr>().ok())
-                    .collect()
-            })
-            .unwrap_or_default();
+        {
+            Ok(s) => {
+                let mut proxies = Vec::new();
+                for p in s.split(',').map(|p| p.trim()).filter(|p| !p.is_empty()) {
+                    let ip = p.parse::<IpAddr>().map_err(|e| {
+                        anyhow::anyhow!("Invalid IP address '{}' in TRUSTED_PROXIES: {}", p, e)
+                    })?;
+                    proxies.push(ip);
+                }
+                proxies
+            }
+            Err(_) => Vec::new(),
+        };
 
         Ok(Self {
             host: std::env::var("HOST").unwrap_or("0.0.0.0".into()),
@@ -164,5 +168,31 @@ impl Settings {
                 .unwrap_or(false),
             trusted_proxies,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_trusted_proxies_parsing_and_validation() {
+        // Invalid IP rejected
+        std::env::set_var("TRUSTED_PROXIES", "10.0.0.1,invalid-ip,127.0.0.1");
+        let res = Settings::from_env();
+        assert!(res.is_err());
+        let err_msg = res.unwrap_err().to_string();
+        assert!(err_msg.contains("invalid-ip"));
+
+        // Valid IPs parsed
+        std::env::set_var("TRUSTED_PROXIES", " 10.0.0.1, 127.0.0.1 , ::1 ");
+        let res = Settings::from_env();
+        assert!(res.is_ok());
+        let s = res.unwrap();
+        assert_eq!(s.trusted_proxies.len(), 3);
+        assert!(s.trusted_proxies.contains(&"10.0.0.1".parse().unwrap()));
+        assert!(s.trusted_proxies.contains(&"127.0.0.1".parse().unwrap()));
+        assert!(s.trusted_proxies.contains(&"::1".parse().unwrap()));
+        std::env::remove_var("TRUSTED_PROXIES");
     }
 }
