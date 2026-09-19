@@ -82,9 +82,12 @@ services:
       # Persistence & Queue
       - REDIS_URL=redis://redis:6379
       - ALLOW_LOOPBACK_WEBHOOKS=false
-    # Bubblewrap requires user namespace or SYS_ADMIN capability
-    cap_add:
-      - SYS_ADMIN
+    # Bubblewrap uses unprivileged user namespaces by default.
+    # cap_add: [SYS_ADMIN] is only needed if your host kernel disables unprivileged
+    # user namespaces (sysctl kernel.unprivileged_userns_clone=0).
+    # On restricted container platforms (AWS ECS/Fargate, Google Cloud Run), leave this commented out.
+    # cap_add:
+    #   - SYS_ADMIN
     depends_on:
       - redis
     networks:
@@ -103,6 +106,9 @@ networks:
   internal-net:
     driver: bridge
 ```
+
+> [!NOTE]
+> **Kernel Namespaces vs `SYS_ADMIN`**: Otter uses `bwrap` (Bubblewrap) which leverages unprivileged user namespaces by default. On modern Linux and standard Docker Engine installations, `cap_add: [SYS_ADMIN]` is unnecessary. Only uncomment `cap_add: [SYS_ADMIN]` if your host OS disables unprivileged user namespace cloning (`kernel.unprivileged_userns_clone=0`).
 
 To build and start the service:
 ```bash
