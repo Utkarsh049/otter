@@ -993,6 +993,7 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
+ "sha1_smol",
  "sha2",
  "subtle",
  "thiserror 1.0.69",

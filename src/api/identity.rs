@@ -56,6 +56,45 @@ impl ClientIdentity {
     }
 }
 
+pub fn normalize_identity_key(identity_key: &str, configured_api_keys: &[String]) -> String {
+    if let Some(key_val) = identity_key.strip_prefix("key:") {
+        // Modern 64-character SHA-256 hex string: already normalized
+        if key_val.len() == 64 && key_val.chars().all(|c| c.is_ascii_hexdigit()) {
+            return identity_key.to_string();
+        }
+
+        // Check if key_val matches the legacy SHA-1 of any configured key
+        for configured in configured_api_keys {
+            let mut s1 = sha1_smol::Sha1::new();
+            s1.update(configured.as_bytes());
+            if s1.digest().to_string() == key_val {
+                use sha2::{Digest, Sha256};
+                let mut s2 = Sha256::new();
+                s2.update(configured.as_bytes());
+                return format!("key:{:x}", s2.finalize());
+            }
+        }
+
+        // Check if key_val matches any configured key directly (legacy raw key)
+        for configured in configured_api_keys {
+            if configured == key_val {
+                use sha2::{Digest, Sha256};
+                let mut s2 = Sha256::new();
+                s2.update(configured.as_bytes());
+                return format!("key:{:x}", s2.finalize());
+            }
+        }
+
+        // Unrecognized unhashed key: hash with SHA-256 to ensure consistent length and format
+        use sha2::{Digest, Sha256};
+        let mut s2 = Sha256::new();
+        s2.update(key_val.as_bytes());
+        format!("key:{:x}", s2.finalize())
+    } else {
+        identity_key.to_string()
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UserAssertionClaims {
     pub sub: String,
@@ -214,6 +253,27 @@ mod tests {
         };
         assert_ne!(u1.rate_limit_key(), u2.rate_limit_key());
         assert_ne!(u1.concurrency_key(), u2.concurrency_key());
+    }
+
+    #[test]
+    fn test_normalize_identity_key_legacy_upgrade() {
+        let configured = vec!["client_key".to_string(), "admin_key".to_string()];
+        
+        // Legacy raw key
+        let norm_raw = normalize_identity_key("key:client_key", &configured);
+        assert_eq!(norm_raw, "key:d9ee725310e983561b0447bc0f5cffc57161c33f3a64051568e24fc3fc8a5d18");
+
+        // Legacy SHA-1 hash of client_key
+        let norm_sha1 = normalize_identity_key("key:ee369845b98b65e65abb99e72a3bec006a78d3e8", &configured);
+        assert_eq!(norm_sha1, "key:d9ee725310e983561b0447bc0f5cffc57161c33f3a64051568e24fc3fc8a5d18");
+
+        // Modern SHA-256 hash stays identical
+        let norm_sha256 = normalize_identity_key("key:d9ee725310e983561b0447bc0f5cffc57161c33f3a64051568e24fc3fc8a5d18", &configured);
+        assert_eq!(norm_sha256, "key:d9ee725310e983561b0447bc0f5cffc57161c33f3a64051568e24fc3fc8a5d18");
+
+        // User or IP keys are untouched
+        assert_eq!(normalize_identity_key("user:123", &configured), "user:123");
+        assert_eq!(normalize_identity_key("ip:127.0.0.1", &configured), "ip:127.0.0.1");
     }
 
     #[test]

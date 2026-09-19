@@ -32,11 +32,15 @@ fn sanitize_client_identity(
 ) -> ClientIdentity {
     match identity {
         Some(Extension(ClientIdentity::ApiKey { key_id })) => {
-            use sha2::{Digest, Sha256};
-            let mut hasher = Sha256::new();
-            hasher.update(key_id.as_bytes());
-            ClientIdentity::ApiKey {
-                key_id: format!("{:x}", hasher.finalize()),
+            if key_id.len() == 64 && key_id.chars().all(|c| c.is_ascii_hexdigit()) {
+                ClientIdentity::ApiKey { key_id }
+            } else {
+                use sha2::{Digest, Sha256};
+                let mut hasher = Sha256::new();
+                hasher.update(key_id.as_bytes());
+                ClientIdentity::ApiKey {
+                    key_id: format!("{:x}", hasher.finalize()),
+                }
             }
         }
         Some(Extension(id)) => id,

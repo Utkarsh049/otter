@@ -210,6 +210,18 @@ impl Worker {
             let max_concurrent_per_ip = settings.max_concurrent_per_ip;
             let max_concurrent_per_user = settings.max_concurrent_per_user;
             let in_flight = in_flight.clone();
+            let configured_api_keys: Arc<Vec<String>> = Arc::new(
+                settings
+                    .otter_api_key
+                    .as_deref()
+                    .map(|s| {
+                        s.split(',')
+                            .map(|k| k.trim().to_string())
+                            .filter(|k| !k.is_empty())
+                            .collect()
+                    })
+                    .unwrap_or_default(),
+            );
 
             // Spawn max_concurrent worker loops
             for _ in 0..settings.max_concurrent {
@@ -218,6 +230,7 @@ impl Worker {
                 let registry = registry.clone();
                 let slots = slots.clone();
                 let in_flight = in_flight.clone();
+                let configured_api_keys = configured_api_keys.clone();
 
                 tokio::spawn(async move {
                     loop {
@@ -259,7 +272,13 @@ impl Worker {
 
                                     let identity_key = job
                                         .identity_key
-                                        .clone()
+                                        .as_deref()
+                                        .map(|k| {
+                                            crate::api::identity::normalize_identity_key(
+                                                k,
+                                                &configured_api_keys,
+                                            )
+                                        })
                                         .unwrap_or_else(|| format!("ip:{}", job.ip));
 
                                     let max_limit = if identity_key.starts_with("user:")
