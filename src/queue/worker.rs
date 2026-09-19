@@ -332,26 +332,74 @@ impl Worker {
                                                     let key = self.key.clone();
                                                     let token = self.token.clone();
                                                     tokio::spawn(async move {
-                                                        if let Ok(mut c) = client
-                                                            .get_multiplexed_tokio_connection()
-                                                            .await
-                                                        {
-                                                            let release_script = redis::Script::new(
-                                                                r#"
-                                                            redis.call('SREM', KEYS[1], ARGV[1])
-                                                            local remaining = redis.call('SCARD', KEYS[1])
-                                                            if remaining == 0 then
-                                                                redis.call('DEL', KEYS[1])
-                                                            end
-                                                            return 0
-                                                        "#,
+                                                        let release_script = redis::Script::new(
+                                                            r#"
+                                                        redis.call('SREM', KEYS[1], ARGV[1])
+                                                        local remaining = redis.call('SCARD', KEYS[1])
+                                                        if remaining == 0 then
+                                                            redis.call('DEL', KEYS[1])
+                                                        end
+                                                        return 0
+                                                    "#,
+                                                        );
+
+                                                        let mut released = false;
+                                                        for attempt in 0..5 {
+                                                            if attempt > 0 {
+                                                                tokio::time::sleep(tokio::time::Duration::from_millis(50 * (1 << attempt))).await;
+                                                            }
+
+                                                            let conn_res = tokio::time::timeout(
+                                                                Duration::from_secs(2),
+                                                                client.get_multiplexed_tokio_connection(),
+                                                            )
+                                                            .await;
+
+                                                            let mut c = match conn_res {
+                                                                Ok(Ok(c)) => c,
+                                                                Ok(Err(e)) => {
+                                                                    tracing::warn!(
+                                                                        attempt = attempt + 1,
+                                                                        error = %e,
+                                                                        "Failed to get Redis connection to release concurrency permit, retrying"
+                                                                    );
+                                                                    continue;
+                                                                }
+                                                                Err(_) => {
+                                                                    tracing::warn!(
+                                                                        attempt = attempt + 1,
+                                                                        "Timed out getting Redis connection to release concurrency permit, retrying"
+                                                                    );
+                                                                    continue;
+                                                                }
+                                                            };
+
+                                                            match release_script
+                                                                .key(&key)
+                                                                .arg(&token)
+                                                                .invoke_async::<()>(&mut c)
+                                                                .await
+                                                            {
+                                                                Ok(()) => {
+                                                                    released = true;
+                                                                    break;
+                                                                }
+                                                                Err(e) => {
+                                                                    tracing::warn!(
+                                                                        attempt = attempt + 1,
+                                                                        error = %e,
+                                                                        "Failed to execute release script in Redis, retrying"
+                                                                    );
+                                                                }
+                                                            }
+                                                        }
+
+                                                        if !released {
+                                                            tracing::error!(
+                                                                key = %key,
+                                                                token = %token,
+                                                                "Failed to release Redis concurrency permit after retries; will expire via TTL"
                                                             );
-                                                            let _: Result<(), redis::RedisError> =
-                                                                release_script
-                                                                    .key(&key)
-                                                                    .arg(&token)
-                                                                    .invoke_async(&mut c)
-                                                                    .await;
                                                         }
                                                     });
                                                 }
