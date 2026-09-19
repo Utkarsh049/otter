@@ -295,13 +295,18 @@ impl Worker {
 
                                     let acquire_script = redis::Script::new(
                                         r#"
-                                    local current = redis.call('INCR', KEYS[1])
-                                    if current > tonumber(ARGV[1]) then
-                                        redis.call('DECR', KEYS[1])
-                                        return 0
-                                    else
+                                    local count = redis.call('SCARD', KEYS[1])
+                                    local is_member = redis.call('SISMEMBER', KEYS[1], ARGV[3])
+                                    if is_member == 1 then
                                         redis.call('EXPIRE', KEYS[1], tonumber(ARGV[2]))
                                         return 1
+                                    end
+                                    if count < tonumber(ARGV[1]) then
+                                        redis.call('SADD', KEYS[1], ARGV[3])
+                                        redis.call('EXPIRE', KEYS[1], tonumber(ARGV[2]))
+                                        return 1
+                                    else
+                                        return 0
                                     end
                                 "#,
                                     );
@@ -310,6 +315,7 @@ impl Worker {
                                         .key(&redis_concurrency_key)
                                         .arg(max_limit)
                                         .arg(ttl_secs)
+                                        .arg(&job.token)
                                         .invoke_async(&mut conn)
                                         .await;
 
@@ -318,11 +324,13 @@ impl Worker {
                                             struct RedisPermitGuard {
                                                 client: redis::Client,
                                                 key: String,
+                                                token: String,
                                             }
                                             impl Drop for RedisPermitGuard {
                                                 fn drop(&mut self) {
                                                     let client = self.client.clone();
                                                     let key = self.key.clone();
+                                                    let token = self.token.clone();
                                                     tokio::spawn(async move {
                                                         if let Ok(mut c) = client
                                                             .get_multiplexed_tokio_connection()
@@ -330,8 +338,9 @@ impl Worker {
                                                         {
                                                             let release_script = redis::Script::new(
                                                                 r#"
-                                                            local current = redis.call('DECR', KEYS[1])
-                                                            if current <= 0 then
+                                                            redis.call('SREM', KEYS[1], ARGV[1])
+                                                            local remaining = redis.call('SCARD', KEYS[1])
+                                                            if remaining == 0 then
                                                                 redis.call('DEL', KEYS[1])
                                                             end
                                                             return 0
@@ -340,6 +349,7 @@ impl Worker {
                                                             let _: Result<(), redis::RedisError> =
                                                                 release_script
                                                                     .key(&key)
+                                                                    .arg(&token)
                                                                     .invoke_async(&mut c)
                                                                     .await;
                                                         }
@@ -349,6 +359,7 @@ impl Worker {
                                             let _redis_permit = RedisPermitGuard {
                                                 client: client.clone(),
                                                 key: redis_concurrency_key,
+                                                token: job.token.clone(),
                                             };
 
                                             let _ = store
