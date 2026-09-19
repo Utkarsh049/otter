@@ -57,6 +57,39 @@ pub struct Worker {
     allow_loopback: bool,
 }
 
+async fn requeue_job_with_retries(
+    client: &redis::Client,
+    conn: &mut redis::aio::MultiplexedConnection,
+    store: &SubmissionStore,
+    token: &str,
+    json_str: &str,
+) -> bool {
+    use redis::AsyncCommands;
+    if conn.rpush::<_, _, ()>("queue:submissions", json_str).await.is_ok() {
+        return true;
+    }
+    for retry in 0..5 {
+        tokio::time::sleep(Duration::from_millis(100 * (1 << retry))).await;
+        let conn_res = tokio::time::timeout(
+            Duration::from_secs(2),
+            client.get_multiplexed_tokio_connection(),
+        )
+        .await;
+        if let Ok(Ok(mut retry_conn)) = conn_res {
+            if retry_conn.rpush::<_, _, ()>("queue:submissions", json_str).await.is_ok() {
+                *conn = retry_conn;
+                return true;
+            }
+        }
+    }
+    tracing::error!(
+        token = %token,
+        "CRITICAL: Failed to requeue job to Redis after retries; marking internal error"
+    );
+    let _ = store.update_status(token, StatusCode::internal_error()).await;
+    false
+}
+
 fn is_blocklisted(ip: std::net::IpAddr) -> bool {
     match ip {
         std::net::IpAddr::V4(ipv4) => {
@@ -624,11 +657,37 @@ impl Worker {
 
                                             in_flight.fetch_sub(1, Ordering::Relaxed);
                                         }
-                                        _ => {
-                                            // Push job back onto queue (RPUSH) and sleep
-                                            let _: Result<(), redis::RedisError> =
-                                                conn.rpush("queue:submissions", json_str).await;
+                                        Ok(_) => {
+                                            // Quota limit reached for this identity; requeue and back off
+                                            let ok = requeue_job_with_retries(
+                                                &client,
+                                                &mut conn,
+                                                &store,
+                                                &job.token,
+                                                &json_str,
+                                            )
+                                            .await;
                                             tokio::time::sleep(Duration::from_millis(50)).await;
+                                            if !ok {
+                                                break;
+                                            }
+                                        }
+                                        Err(redis_err) => {
+                                            tracing::error!(
+                                                error = %redis_err,
+                                                token = %job.token,
+                                                "Redis error during permit acquisition; recovering job..."
+                                            );
+                                            requeue_job_with_retries(
+                                                &client,
+                                                &mut conn,
+                                                &store,
+                                                &job.token,
+                                                &json_str,
+                                            )
+                                            .await;
+                                            // Reconnect worker connection on next loop iteration
+                                            break;
                                         }
                                     }
                                 }
