@@ -968,7 +968,8 @@ impl Worker {
                 ));
             }
 
-            Ok(())        } else {
+            Ok(())
+        } else {
             // Existing in-memory logic
             let current = self.queue_depth.load(Ordering::Relaxed);
             if current >= self.max_queue_depth {
