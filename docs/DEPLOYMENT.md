@@ -81,6 +81,7 @@ function createOtterAssertion(userId, tenantId = null) {
 
 **Python (`PyJWT`):**
 ```python
+import os
 import time
 import jwt
 
