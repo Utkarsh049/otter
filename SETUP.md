@@ -236,7 +236,7 @@ app.post('/api/run', async (req, res) => {
 
 In this pattern:
 1. The browser connects to your backend via WebSocket.
-2. The user clicks "Run". The backend submits the job with a `webhook_url` pointing to an internal endpoint on your backend.
+2. The user clicks "Run". The backend submits the job with a `webhook_url` pointing to an internal endpoint on your backend and returns `{ token }`. The browser registers the token over the WebSocket (`{ type: 'SUBSCRIBE', token }`).
 3. Otter executes the code and `POST`s the final result to your backend webhook.
 4. Your backend immediately pushes the output down the active WebSocket to the browser terminal.
 
@@ -258,6 +258,18 @@ const wss = new WebSocketServer({ server, path: '/ws' });
 const activeSockets = new Map();
 
 wss.on('connection', (ws) => {
+  // Associate the client's WebSocket with their submission token
+  ws.on('message', (message) => {
+    try {
+      const data = JSON.parse(message);
+      if (data.type === 'SUBSCRIBE' && data.token) {
+        activeSockets.set(data.token, ws);
+      }
+    } catch (err) {
+      console.error('Failed to parse WebSocket message:', err);
+    }
+  });
+
   ws.on('close', () => {
     for (const [token, clientWs] of activeSockets.entries()) {
       if (clientWs === ws) activeSockets.delete(token);
