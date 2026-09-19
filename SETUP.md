@@ -288,6 +288,11 @@ app.post('/api/run-async', async (req, res) => {
     }),
   });
 
+  if (!submitRes.ok) {
+    const errData = await submitRes.json();
+    return res.status(submitRes.status).json(errData);
+  }
+
   const { token } = await submitRes.json();
   res.json({ token });
 });
