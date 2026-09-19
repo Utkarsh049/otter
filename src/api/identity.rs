@@ -190,18 +190,7 @@ pub fn extract_ip(
                 peer_ip
             }
         }
-        None => headers
-            .get("x-forwarded-for")
-            .and_then(|h| h.to_str().ok())
-            .and_then(|s| s.split(',').next())
-            .and_then(|s| s.trim().parse::<IpAddr>().ok())
-            .or_else(|| {
-                headers
-                    .get("x-real-ip")
-                    .and_then(|h| h.to_str().ok())
-                    .and_then(|s| s.trim().parse::<IpAddr>().ok())
-            })
-            .unwrap_or_else(|| "127.0.0.1".parse().unwrap()),
+        None => "127.0.0.1".parse().unwrap(),
     }
 }
 
@@ -386,6 +375,17 @@ mod tests {
         let res = verify_jwt_assertion(&token, "secret-2", None, None);
         assert!(matches!(res, Err(IdentityError::InvalidJwt(_))));
     }
+    #[test]
+    fn test_extract_ip_none_connect_info_fallback() {
+        let mut headers = HeaderMap::new();
+        headers.insert("x-forwarded-for", "203.0.113.195".parse().unwrap());
+        headers.insert("x-real-ip", "203.0.113.195".parse().unwrap());
+        let trusted_proxies = vec!["10.0.0.1".parse().unwrap()];
+
+        let ip = extract_ip(&headers, None, &trusted_proxies);
+        assert_eq!(ip, "127.0.0.1".parse::<IpAddr>().unwrap());
+    }
+
     #[test]
     fn test_extract_ip_untrusted_proxy_ignored() {
         let mut headers = HeaderMap::new();
