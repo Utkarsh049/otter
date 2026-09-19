@@ -156,7 +156,15 @@ pub async fn get_submission(
     Extension(store): Extension<Arc<SubmissionStore>>,
 ) -> Result<Json<SubmissionResponse>, ApiError> {
     let sub = store.get(&token).await.map_err(|e| {
-        tracing::error!("Failed to fetch submission {}: {}", token, e);
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        token.hash(&mut hasher);
+        let token_hash = hasher.finish();
+        tracing::error!(
+            token_hash = %token_hash,
+            error = %e,
+            "Failed to fetch submission from store"
+        );
         ApiError::InternalError("Failed to fetch submission".to_string())
     })?;
 
