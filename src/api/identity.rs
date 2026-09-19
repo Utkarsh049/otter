@@ -17,11 +17,11 @@ pub enum ClientIdentity {
 
 fn encode_component(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
-    for b in s.bytes() {
-        match b {
-            b'%' => out.push_str("%25"),
-            b':' => out.push_str("%3A"),
-            _ => out.push(b as char),
+    for ch in s.chars() {
+        match ch {
+            '%' => out.push_str("%25"),
+            ':' => out.push_str("%3A"),
+            _ => out.push(ch),
         }
     }
     out
@@ -239,6 +239,14 @@ mod tests {
         };
         assert_eq!(ip.rate_limit_key(), "ip:127.0.0.1");
         assert!(!ip.is_user());
+    }
+
+    #[test]
+    fn test_encode_component_utf8() {
+        assert_eq!(encode_component("user:123"), "user%3A123");
+        assert_eq!(encode_component("100%"), "100%25");
+        assert_eq!(encode_component("🦀_user"), "🦀_user");
+        assert_eq!(encode_component("用户:1"), "用户%3A1");
     }
 
     #[test]
